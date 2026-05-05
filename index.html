@@ -6,100 +6,196 @@
     <title>DeepCode</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body>
+  <body data-view="chat">
     <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand"><span class="brand-mark">D</span><span>DeepCode</span></div>
-        <button id="new-chat" class="nav-button primary">+ 新建对话</button>
-        <div class="session-list">
-          <div class="section-label">会话</div>
-          <button class="session-item active" data-view="chat">Code Agent V1</button>
+      <header class="app-bar">
+        <div class="app-bar-left">
+          <button class="icon-button" type="button" title="后退" disabled>‹</button>
+          <button class="icon-button" type="button" title="前进" disabled>›</button>
+          <nav class="menu-strip" aria-label="应用菜单">
+            <button type="button">文件</button>
+            <button type="button">编辑</button>
+            <button type="button">查看</button>
+            <button type="button">窗口</button>
+            <button type="button">帮助</button>
+          </nav>
         </div>
-        <button id="open-settings" class="settings-link" data-view="settings">设置</button>
-        <div class="version-info" id="version-info"></div>
-      </aside>
-      <main class="main-pane">
-        <header class="topbar">
-          <div class="title-block">
-            <h1 id="view-title">Code Agent 工作台</h1>
-            <div class="meta-line"><span id="workspace-meta">工作区加载中</span> · <span id="model-meta">模型加载中</span></div>
+        <div class="app-bar-right">
+          <button class="toolbar-button" type="button" title="运行">▷</button>
+          <button class="toolbar-button model-toolbar" type="button" title="模型"><span id="toolbar-model">模型</span>⌄</button>
+          <button class="icon-button" type="button" title="终端">⌁</button>
+          <button class="icon-button" type="button" title="面板">▯</button>
+          <div class="status-pill" id="status-pill" data-mode="ready"><span class="status-dot"></span><span id="status-text">Ready</span></div>
+          <div class="window-controls" aria-label="窗口控制">
+            <button id="window-minimize" class="window-control" type="button" title="最小化">─</button>
+            <button id="window-maximize" class="window-control" type="button" title="最大化">□</button>
+            <button id="window-close" class="window-control close" type="button" title="关闭">×</button>
           </div>
-          <div class="status-pill" id="status-pill"><span class="status-dot"></span><span id="status-text">Ready</span></div>
-        </header>
-        <section id="chat-view" class="view active">
-          <div id="messages" class="messages"></div>
-          <div class="composer">
-            <div class="composer-card">
-              <textarea id="prompt-input" placeholder="输入需求。Enter 发送，Shift + Enter 换行。"></textarea>
-              <button id="send-button" class="send-button">发送</button>
+        </div>
+      </header>
+
+      <div class="workbench">
+        <aside class="sidebar">
+          <div class="sidebar-content">
+            <div class="brand"><span class="brand-mark">D</span><span>DeepCode</span></div>
+            <nav class="primary-nav" aria-label="主导航">
+              <button id="new-chat" class="nav-button" type="button"><span class="nav-icon">＋</span><span>新对话</span></button>
+              <button class="nav-button" type="button"><span class="nav-icon">⌕</span><span>搜索</span></button>
+              <button class="nav-button" type="button"><span class="nav-icon">⌘</span><span>插件</span></button>
+              <button class="nav-button" type="button"><span class="nav-icon">◴</span><span>自动化</span></button>
+            </nav>
+
+            <div class="nav-section">
+              <div class="section-label">项目</div>
+              <button class="project-item active" type="button">
+                <span class="project-icon">▱</span>
+                <span class="item-main">deepcode</span>
+                <span class="item-action">↗</span>
+              </button>
+              <button class="project-item" type="button">
+                <span class="project-icon">▱</span>
+                <span class="item-main">onedrive-vercel-index</span>
+                <span class="item-action">↗</span>
+              </button>
+              <button class="project-item" type="button">
+                <span class="project-icon">▱</span>
+                <span class="item-main">MoverTool</span>
+                <span class="item-action">↗</span>
+              </button>
+              <button class="project-item" type="button">
+                <span class="project-icon">▱</span>
+                <span class="item-main">pusheen</span>
+                <span class="item-action">↗</span>
+              </button>
+            </div>
+
+            <div class="nav-section conversations">
+              <div class="section-label row-label"><span>对话</span><span>≡</span></div>
+              <button class="session-item active" type="button" data-view="chat">
+                <span>修复对话报错</span>
+                <span class="item-time">10 分</span>
+              </button>
+              <button class="session-item" type="button" data-view="chat">
+                <span>优化项目文档</span>
+                <span class="item-time">1 小时</span>
+              </button>
+              <button class="session-item empty" type="button" data-view="chat">
+                <span>暂无聊天</span>
+              </button>
             </div>
           </div>
-        </section>
-        <section id="settings-view" class="view">
-          <div class="settings-card">
-            <h2>基础设置</h2>
-            <p class="helper-text">V1 默认使用 mock 联调；切到 stdio 后会由主进程启动 `codex app-server` 并通过 JSON-RPC 通信。</p>
-            <div class="form-grid">
-              <label>Transport
-                <select id="transport">
-                  <option value="mock">mock</option>
-                  <option value="stdio">stdio</option>
-                  <option value="websocket">websocket</option>
-                </select>
-              </label>
-              <label>Codex 命令
-                <input id="app-server-command" type="text" placeholder="codex" />
-              </label>
-              <label>Codex 参数
-                <input id="app-server-args" type="text" placeholder="app-server" />
-              </label>
-              <label>WebSocket URL
-                <input id="app-server-url" type="text" placeholder="ws://127.0.0.1:4500" />
-              </label>
-              <label>模型名称
-                <input id="model" type="text" placeholder="gpt-5.4" />
-              </label>
-              <label>工作区路径
-                <input id="workspace-path" type="text" />
-              </label>
-              <label>OpenAI API Key
-                <input id="api-key" type="password" placeholder="可选：为空时使用本机 Codex 登录或环境变量" />
-              </label>
+
+          <div class="sidebar-footer">
+            <button id="open-settings" class="settings-link" type="button" data-view="settings"><span class="nav-icon">⚙</span><span>设置</span></button>
+            <div class="version-info" id="version-info"></div>
+          </div>
+        </aside>
+
+        <main class="main-pane">
+          <header class="conversation-header">
+            <div>
+              <h1 id="view-title">修复对话报错</h1>
+              <div class="meta-line"><span id="workspace-meta">工作区加载中</span> · <span id="model-meta">模型加载中</span></div>
             </div>
-            <div class="form-actions">
-              <button id="save-settings" class="send-button">保存设置</button>
-              <button id="test-connection" class="secondary-button">连接测试</button>
+            <button class="conversation-more" type="button" title="更多">···</button>
+          </header>
+
+          <section id="chat-view" class="view active">
+            <div id="messages" class="messages"></div>
+            <div class="composer">
+              <div class="composer-card">
+                <textarea id="prompt-input" placeholder="输入需求，描述你想让 DeepCode 处理的事情"></textarea>
+                <div class="composer-actions">
+                  <div class="composer-tools">
+                    <button class="icon-button composer-tool" type="button" title="添加">＋</button>
+                    <button class="tool-chip" type="button" title="自动审查">自动审查⌄</button>
+                    <button class="tool-chip" type="button" title="模型"><span id="composer-model">模型</span>⌄</button>
+                  </div>
+                  <div class="composer-tools">
+                    <button class="icon-button composer-tool" type="button" title="语音">◌</button>
+                    <button id="send-button" class="send-button" type="button" title="发送">↑</button>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div id="settings-notice" class="notice"></div>
+          </section>
+
+          <section id="settings-view" class="view">
+            <div class="settings-card">
+              <h2>基础设置</h2>
+              <p class="helper-text">V1 默认使用 mock 联调；切到 stdio 后会由主进程启动 `codex app-server` 并通过 JSON-RPC 通信。</p>
+              <div class="form-grid">
+                <label>Transport
+                  <select id="transport">
+                    <option value="mock">mock</option>
+                    <option value="stdio">stdio</option>
+                    <option value="websocket">websocket</option>
+                  </select>
+                </label>
+                <label>Codex 命令
+                  <input id="app-server-command" type="text" placeholder="codex" />
+                </label>
+                <label>Codex 参数
+                  <input id="app-server-args" type="text" placeholder="app-server" />
+                </label>
+                <label>WebSocket URL
+                  <input id="app-server-url" type="text" placeholder="ws://127.0.0.1:4500" />
+                </label>
+                <label>模型名称
+                  <input id="model" type="text" placeholder="gpt-5.4" />
+                </label>
+                <label>工作区路径
+                  <input id="workspace-path" type="text" />
+                </label>
+                <label>OpenAI API Key
+                  <input id="api-key" type="password" placeholder="可选：为空时使用本机 Codex 登录或环境变量" />
+                </label>
+              </div>
+              <div class="form-actions">
+                <button id="save-settings" class="send-button text-send" type="button">保存设置</button>
+                <button id="test-connection" class="secondary-button" type="button">连接测试</button>
+              </div>
+              <div id="settings-notice" class="notice"></div>
+            </div>
+          </section>
+        </main>
+
+        <aside class="branch-panel" aria-label="分支详情">
+          <div class="branch-card">
+            <div class="branch-heading">
+              <h2>分支详情</h2>
+              <button class="icon-button" type="button" title="更多">···</button>
+            </div>
+            <div class="branch-row changes-row">
+              <span class="branch-label">更改</span>
+              <span class="change-counts"><span class="insertions">+3,007</span> <span class="deletions">-46</span></span>
+            </div>
+            <div class="branch-row">
+              <span class="branch-label">Git 操作</span>
+              <span class="branch-value">本地更改</span>
+            </div>
+            <div class="branch-row muted-row">
+              <span class="branch-label">GitHub CLI</span>
+              <span class="branch-value">不可用</span>
+            </div>
+            <div class="branch-actions">
+              <button id="save-plan" class="secondary-button" type="button" disabled>保存计划</button>
+              <button class="secondary-button ghost" type="button" disabled>发布 PR</button>
+            </div>
+            <div class="branch-subsection">
+              <div class="branch-subtitle">运行事件</div>
+              <div id="run-log" class="run-log">等待运行。</div>
+            </div>
+            <div class="branch-subsection">
+              <div class="branch-subtitle">最近计划</div>
+              <div id="plan-box" class="plan-box">暂无计划。发送需求后，Agent 回复会显示在这里。</div>
+              <div id="plan-notice" class="notice"></div>
+            </div>
           </div>
-        </section>
-      </main>
-      <aside class="side-panel">
-        <div class="panel-card">
-          <h2>本次计划</h2>
-          <div id="plan-box" class="plan-box">暂无计划。发送需求后，Agent 回复会显示在这里。</div>
-          <div class="form-actions">
-            <button id="save-plan" class="secondary-button" disabled>保存到 docs</button>
-          </div>
-          <div id="plan-notice" class="notice"></div>
-        </div>
-        <div class="panel-card">
-          <h2>运行步骤</h2>
-          <div id="run-log" class="run-log">等待运行。</div>
-        </div>
-        <div class="panel-card">
-          <h2>上下文文件</h2>
-          <div class="context-list">
-            <div>main.js</div>
-            <div>preload.js</div>
-            <div>index.html</div>
-            <div>styles.css</div>
-            <div>src/main/</div>
-            <div>docs/</div>
-          </div>
-        </div>
-      </aside>
+        </aside>
+      </div>
     </div>
+
     <script>
       const state = {
         settings: {},
@@ -118,17 +214,26 @@
       }
       function setStatus(text, mode = 'ready') {
         $('status-text').textContent = text;
-        const pill = $('status-pill');
-        pill.style.background = mode === 'error' ? '#fef2f2' : mode === 'running' ? '#eff6ff' : '#ecfdf5';
-        pill.style.color = mode === 'error' ? '#dc2626' : mode === 'running' ? '#2563eb' : '#047857';
+        $('status-pill').dataset.mode = mode;
+      }
+      function scrollMessages() {
+        $('messages').scrollTop = $('messages').scrollHeight;
       }
       function addMessage(role, content) {
         const message = document.createElement('div');
         message.className = `message ${role}`;
         message.textContent = content;
         $('messages').appendChild(message);
-        $('messages').scrollTop = $('messages').scrollHeight;
+        scrollMessages();
         return message;
+      }
+      function addEventLine(label, mode = 'event') {
+        const entry = document.createElement('div');
+        entry.className = `timeline-event ${mode}`;
+        entry.textContent = label;
+        $('messages').appendChild(entry);
+        scrollMessages();
+        return entry;
       }
       function appendRunLog(label) {
         const runLog = $('run-log');
@@ -139,13 +244,18 @@
         entry.textContent = label;
         runLog.appendChild(entry);
         runLog.scrollTop = runLog.scrollHeight;
+        addEventLine(label);
       }
       function resetRunLog() {
         $('run-log').textContent = '等待运行。';
       }
       function updateMeta() {
+        const transport = state.settings.transport || 'mock';
+        const model = state.settings.model || '未设置模型';
         $('workspace-meta').textContent = state.settings.workspacePath || '未设置工作区';
-        $('model-meta').textContent = `${state.settings.transport || 'mock'} · ${state.settings.model || '未设置模型'}`;
+        $('model-meta').textContent = `${transport} · ${model}`;
+        $('toolbar-model').textContent = model;
+        $('composer-model').textContent = model;
       }
       function updateTransportFields() {
         const transport = $('transport').value;
@@ -177,11 +287,14 @@
         };
       }
       function switchView(view) {
+        document.body.dataset.view = view;
         $('chat-view').classList.toggle('active', view === 'chat');
         $('settings-view').classList.toggle('active', view === 'settings');
-        document.querySelector('.session-item').classList.toggle('active', view === 'chat');
+        document.querySelectorAll('.session-item').forEach((item, index) => {
+          item.classList.toggle('active', view === 'chat' && index === 0);
+        });
         $('open-settings').classList.toggle('active', view === 'settings');
-        $('view-title').textContent = view === 'settings' ? '设置' : 'Code Agent 工作台';
+        $('view-title').textContent = view === 'settings' ? '设置' : '修复对话报错';
       }
       async function loadSettings() {
         state.settings = await window.deepcode.getSettings();
@@ -198,12 +311,14 @@
         state.streamContent = '';
         state.activeAgentMessage = null;
         $('send-button').disabled = true;
+        $('prompt-input').disabled = true;
         $('prompt-input').value = '';
         resetRunLog();
         setStatus('Running', 'running');
         addMessage('user', message);
-        state.activeAgentMessage = addMessage('agent', '正在连接 Codex app-server...');
+        appendRunLog('Turn started');
         appendRunLog(`Transport: ${state.settings.transport || 'mock'}`);
+        state.activeAgentMessage = addMessage('agent', '正在连接 Codex app-server...');
         try {
           const response = await window.deepcode.sendMessage({
             requestId,
@@ -234,6 +349,8 @@
           state.activeRequestId = '';
           state.activeAgentMessage = null;
           $('send-button').disabled = false;
+          $('prompt-input').disabled = false;
+          $('prompt-input').focus();
         }
       }
       async function saveSettings() {
@@ -276,6 +393,7 @@
         resetRunLog();
         setStatus('Ready');
         switchView('chat');
+        addMessage('agent', '你好，我是 DeepCode Code Agent。请描述你想实现的功能或修改。');
       }
       function handleAgentEvent(event) {
         if (!event || event.requestId !== state.activeRequestId) {
@@ -293,6 +411,7 @@
         if (event.type === 'plan' || event.type === 'planDelta') {
           $('plan-box').textContent = event.content || '';
           state.latestPlan = event.content || state.latestPlan;
+          $('save-plan').disabled = !state.latestPlan;
           return;
         }
 
@@ -302,13 +421,18 @@
       }
       function bindEvents() {
         $('new-chat').addEventListener('click', resetChat);
-        document.querySelector('.session-item').addEventListener('click', () => switchView('chat'));
+        document.querySelectorAll('.session-item').forEach((item) => {
+          item.addEventListener('click', () => switchView('chat'));
+        });
         $('open-settings').addEventListener('click', () => switchView('settings'));
         $('transport').addEventListener('change', updateTransportFields);
         $('send-button').addEventListener('click', sendMessage);
         $('save-settings').addEventListener('click', saveSettings);
         $('test-connection').addEventListener('click', testConnection);
         $('save-plan').addEventListener('click', savePlan);
+        $('window-minimize').addEventListener('click', () => window.deepcode.minimizeWindow());
+        $('window-maximize').addEventListener('click', () => window.deepcode.toggleMaximizeWindow());
+        $('window-close').addEventListener('click', () => window.deepcode.closeWindow());
         $('prompt-input').addEventListener('keydown', (event) => {
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault();

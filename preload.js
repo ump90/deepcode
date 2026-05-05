@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('deepcode', {
   sendMessage: (payload) => ipcRenderer.invoke('agent:send-message', payload),
   savePlan: (payload) => ipcRenderer.invoke('plan:save', payload),
   testConnection: (settings) => ipcRenderer.invoke('agent:test-connection', settings),
+  minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
+  toggleMaximizeWindow: () => ipcRenderer.invoke('window:maximize-toggle'),
+  closeWindow: () => ipcRenderer.invoke('window:close'),
   onAgentEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('agent:event', listener);

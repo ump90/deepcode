@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu } = require('electron');
 const path = require('path');
 const { sendMessage, testConnection } = require('./src/main/codexClient');
 const { savePlan } = require('./src/main/planWriter');
@@ -15,6 +15,21 @@ function emitAgentEvent(webContents, event) {
 function registerIpcHandlers() {
   ipcMain.handle('settings:get', () => settingsStore.readSettings());
   ipcMain.handle('settings:save', (_event, settings) => settingsStore.writeSettings(settings));
+  ipcMain.handle('window:minimize', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize();
+  });
+  ipcMain.handle('window:maximize-toggle', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return;
+    if (window.isMaximized()) {
+      window.unmaximize();
+    } else {
+      window.maximize();
+    }
+  });
+  ipcMain.handle('window:close', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close();
+  });
   ipcMain.handle('agent:send-message', async (event, payload) => {
     const settings = await settingsStore.readSettings();
     return sendMessage(payload, settings, (agentEvent) => emitAgentEvent(event.sender, agentEvent));
@@ -37,6 +52,8 @@ function createWindow() {
     height: 860,
     minWidth: 1080,
     minHeight: 720,
+    autoHideMenuBar: true,
+    frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -48,6 +65,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
+
   settingsStore = createSettingsStore({
     app,
     defaultWorkspacePath: __dirname,
