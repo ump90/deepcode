@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Electron App</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #f5f7fb;
+        color: #1f2937;
+      }
+
+      main {
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+        text-align: center;
+      }
+
+      section {
+        border-radius: 16px;
+        background: #ffffff;
+        box-shadow: 0 16px 40px rgb(15 23 42 / 10%);
+        padding: 40px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <h1>Electron 项目已创建</h1>
+        <p>入口文件：<strong>main.js</strong></p>
+        <p>
+          Chrome <span id="chrome-version"></span> · Node
+          <span id="node-version"></span> · Electron
+          <span id="electron-version"></span>
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
