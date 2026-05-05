@@ -3,41 +3,330 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Electron App</title>
-    <style>
-      body {
-        margin: 0;
-        font-family: Arial, sans-serif;
-        background: #f5f7fb;
-        color: #1f2937;
-      }
-
-      main {
-        display: grid;
-        min-height: 100vh;
-        place-items: center;
-        text-align: center;
-      }
-
-      section {
-        border-radius: 16px;
-        background: #ffffff;
-        box-shadow: 0 16px 40px rgb(15 23 42 / 10%);
-        padding: 40px;
-      }
-    </style>
+    <title>DeepCode</title>
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main>
-      <section>
-        <h1>Electron 项目已创建</h1>
-        <p>入口文件：<strong>main.js</strong></p>
-        <p>
-          Chrome <span id="chrome-version"></span> · Node
-          <span id="node-version"></span> · Electron
-          <span id="electron-version"></span>
-        </p>
-      </section>
-    </main>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">D</span><span>DeepCode</span></div>
+        <button id="new-chat" class="nav-button primary">+ 新建对话</button>
+        <div class="session-list">
+          <div class="section-label">会话</div>
+          <button class="session-item active" data-view="chat">Code Agent V1</button>
+        </div>
+        <button id="open-settings" class="settings-link" data-view="settings">设置</button>
+        <div class="version-info" id="version-info"></div>
+      </aside>
+      <main class="main-pane">
+        <header class="topbar">
+          <div class="title-block">
+            <h1 id="view-title">Code Agent 工作台</h1>
+            <div class="meta-line"><span id="workspace-meta">工作区加载中</span> · <span id="model-meta">模型加载中</span></div>
+          </div>
+          <div class="status-pill" id="status-pill"><span class="status-dot"></span><span id="status-text">Ready</span></div>
+        </header>
+        <section id="chat-view" class="view active">
+          <div id="messages" class="messages"></div>
+          <div class="composer">
+            <div class="composer-card">
+              <textarea id="prompt-input" placeholder="输入需求。Enter 发送，Shift + Enter 换行。"></textarea>
+              <button id="send-button" class="send-button">发送</button>
+            </div>
+          </div>
+        </section>
+        <section id="settings-view" class="view">
+          <div class="settings-card">
+            <h2>基础设置</h2>
+            <p class="helper-text">V1 默认使用 mock 联调；切到 stdio 后会由主进程启动 `codex app-server` 并通过 JSON-RPC 通信。</p>
+            <div class="form-grid">
+              <label>Transport
+                <select id="transport">
+                  <option value="mock">mock</option>
+                  <option value="stdio">stdio</option>
+                  <option value="websocket">websocket</option>
+                </select>
+              </label>
+              <label>Codex 命令
+                <input id="app-server-command" type="text" placeholder="codex" />
+              </label>
+              <label>Codex 参数
+                <input id="app-server-args" type="text" placeholder="app-server" />
+              </label>
+              <label>WebSocket URL
+                <input id="app-server-url" type="text" placeholder="ws://127.0.0.1:4500" />
+              </label>
+              <label>模型名称
+                <input id="model" type="text" placeholder="gpt-5.4" />
+              </label>
+              <label>工作区路径
+                <input id="workspace-path" type="text" />
+              </label>
+              <label>OpenAI API Key
+                <input id="api-key" type="password" placeholder="可选：为空时使用本机 Codex 登录或环境变量" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="save-settings" class="send-button">保存设置</button>
+              <button id="test-connection" class="secondary-button">连接测试</button>
+            </div>
+            <div id="settings-notice" class="notice"></div>
+          </div>
+        </section>
+      </main>
+      <aside class="side-panel">
+        <div class="panel-card">
+          <h2>本次计划</h2>
+          <div id="plan-box" class="plan-box">暂无计划。发送需求后，Agent 回复会显示在这里。</div>
+          <div class="form-actions">
+            <button id="save-plan" class="secondary-button" disabled>保存到 docs</button>
+          </div>
+          <div id="plan-notice" class="notice"></div>
+        </div>
+        <div class="panel-card">
+          <h2>运行步骤</h2>
+          <div id="run-log" class="run-log">等待运行。</div>
+        </div>
+        <div class="panel-card">
+          <h2>上下文文件</h2>
+          <div class="context-list">
+            <div>main.js</div>
+            <div>preload.js</div>
+            <div>index.html</div>
+            <div>styles.css</div>
+            <div>src/main/</div>
+            <div>docs/</div>
+          </div>
+        </div>
+      </aside>
+    </div>
+    <script>
+      const state = {
+        settings: {},
+        conversationId: null,
+        turnId: null,
+        currentRequest: '',
+        latestPlan: '',
+        sending: false,
+        activeRequestId: '',
+        streamContent: '',
+        activeAgentMessage: null,
+      };
+      const $ = (id) => document.getElementById(id);
+      function createRequestId() {
+        return `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+      function setStatus(text, mode = 'ready') {
+        $('status-text').textContent = text;
+        const pill = $('status-pill');
+        pill.style.background = mode === 'error' ? '#fef2f2' : mode === 'running' ? '#eff6ff' : '#ecfdf5';
+        pill.style.color = mode === 'error' ? '#dc2626' : mode === 'running' ? '#2563eb' : '#047857';
+      }
+      function addMessage(role, content) {
+        const message = document.createElement('div');
+        message.className = `message ${role}`;
+        message.textContent = content;
+        $('messages').appendChild(message);
+        $('messages').scrollTop = $('messages').scrollHeight;
+        return message;
+      }
+      function appendRunLog(label) {
+        const runLog = $('run-log');
+        if (runLog.textContent === '等待运行。') {
+          runLog.textContent = '';
+        }
+        const entry = document.createElement('div');
+        entry.textContent = label;
+        runLog.appendChild(entry);
+        runLog.scrollTop = runLog.scrollHeight;
+      }
+      function resetRunLog() {
+        $('run-log').textContent = '等待运行。';
+      }
+      function updateMeta() {
+        $('workspace-meta').textContent = state.settings.workspacePath || '未设置工作区';
+        $('model-meta').textContent = `${state.settings.transport || 'mock'} · ${state.settings.model || '未设置模型'}`;
+      }
+      function updateTransportFields() {
+        const transport = $('transport').value;
+        const isWebSocket = transport === 'websocket';
+        const isMock = transport === 'mock';
+        $('app-server-url').disabled = !isWebSocket;
+        $('app-server-command').disabled = isMock || isWebSocket;
+        $('app-server-args').disabled = isMock || isWebSocket;
+      }
+      function fillSettingsForm() {
+        $('transport').value = state.settings.transport || 'mock';
+        $('app-server-command').value = state.settings.appServerCommand || 'codex';
+        $('app-server-args').value = state.settings.appServerArgs || 'app-server';
+        $('api-key').value = state.settings.apiKey || '';
+        $('app-server-url').value = state.settings.appServerUrl || '';
+        $('model').value = state.settings.model || '';
+        $('workspace-path').value = state.settings.workspacePath || '';
+        updateTransportFields();
+      }
+      function collectSettingsForm() {
+        return {
+          transport: $('transport').value,
+          appServerCommand: $('app-server-command').value.trim(),
+          appServerArgs: $('app-server-args').value.trim(),
+          apiKey: $('api-key').value.trim(),
+          appServerUrl: $('app-server-url').value.trim(),
+          model: $('model').value.trim(),
+          workspacePath: $('workspace-path').value.trim(),
+        };
+      }
+      function switchView(view) {
+        $('chat-view').classList.toggle('active', view === 'chat');
+        $('settings-view').classList.toggle('active', view === 'settings');
+        document.querySelector('.session-item').classList.toggle('active', view === 'chat');
+        $('open-settings').classList.toggle('active', view === 'settings');
+        $('view-title').textContent = view === 'settings' ? '设置' : 'Code Agent 工作台';
+      }
+      async function loadSettings() {
+        state.settings = await window.deepcode.getSettings();
+        fillSettingsForm();
+        updateMeta();
+      }
+      async function sendMessage() {
+        const message = $('prompt-input').value.trim();
+        if (!message || state.sending) return;
+        const requestId = createRequestId();
+        state.sending = true;
+        state.activeRequestId = requestId;
+        state.currentRequest = message;
+        state.streamContent = '';
+        state.activeAgentMessage = null;
+        $('send-button').disabled = true;
+        $('prompt-input').value = '';
+        resetRunLog();
+        setStatus('Running', 'running');
+        addMessage('user', message);
+        state.activeAgentMessage = addMessage('agent', '正在连接 Codex app-server...');
+        appendRunLog(`Transport: ${state.settings.transport || 'mock'}`);
+        try {
+          const response = await window.deepcode.sendMessage({
+            requestId,
+            message,
+            conversationId: state.conversationId,
+            model: state.settings.model,
+            workspacePath: state.settings.workspacePath,
+          });
+          state.conversationId = response.conversationId || state.conversationId;
+          state.turnId = response.turnId || null;
+          state.latestPlan = response.plan || response.content || '(空回复)';
+          if (state.activeAgentMessage) {
+            state.activeAgentMessage.textContent = response.content || '(空回复)';
+          }
+          $('plan-box').textContent = state.latestPlan;
+          $('save-plan').disabled = false;
+          appendRunLog(response.isMock ? 'Mock 完成' : `Turn 完成：${response.turnId || ''}`.trim());
+          setStatus(response.isMock ? 'Mock Ready' : 'Done');
+        } catch (error) {
+          if (state.activeAgentMessage && !state.streamContent) {
+            state.activeAgentMessage.remove();
+          }
+          addMessage('error', error.message);
+          appendRunLog(`错误：${error.message}`);
+          setStatus('Error', 'error');
+        } finally {
+          state.sending = false;
+          state.activeRequestId = '';
+          state.activeAgentMessage = null;
+          $('send-button').disabled = false;
+        }
+      }
+      async function saveSettings() {
+        $('settings-notice').textContent = '保存中...';
+        state.settings = await window.deepcode.saveSettings(collectSettingsForm());
+        fillSettingsForm();
+        updateMeta();
+        $('settings-notice').textContent = '设置已保存。';
+      }
+      async function testConnection() {
+        $('settings-notice').textContent = '测试连接中...';
+        const result = await window.deepcode.testConnection(collectSettingsForm());
+        $('settings-notice').textContent = result.message;
+        setStatus(result.ok ? 'Connected' : 'Error', result.ok ? 'ready' : 'error');
+      }
+      async function savePlan() {
+        if (!state.latestPlan) return;
+        $('plan-notice').textContent = '保存中...';
+        const result = await window.deepcode.savePlan({
+          request: state.currentRequest,
+          plan: state.latestPlan,
+          model: state.settings.model,
+          workspacePath: state.settings.workspacePath,
+          transport: state.settings.transport,
+          conversationId: state.conversationId,
+          turnId: state.turnId,
+        });
+        $('plan-notice').textContent = `已保存：${result.filePath}`;
+      }
+      function resetChat() {
+        state.conversationId = null;
+        state.turnId = null;
+        state.currentRequest = '';
+        state.latestPlan = '';
+        state.streamContent = '';
+        $('messages').innerHTML = '';
+        $('plan-box').textContent = '暂无计划。发送需求后，Agent 回复会显示在这里。';
+        $('plan-notice').textContent = '';
+        $('save-plan').disabled = true;
+        resetRunLog();
+        setStatus('Ready');
+        switchView('chat');
+      }
+      function handleAgentEvent(event) {
+        if (!event || event.requestId !== state.activeRequestId) {
+          return;
+        }
+
+        if (event.type === 'delta') {
+          state.streamContent = event.content || `${state.streamContent}${event.delta || ''}`;
+          if (state.activeAgentMessage) {
+            state.activeAgentMessage.textContent = state.streamContent || '正在生成回复...';
+          }
+          return;
+        }
+
+        if (event.type === 'plan' || event.type === 'planDelta') {
+          $('plan-box').textContent = event.content || '';
+          state.latestPlan = event.content || state.latestPlan;
+          return;
+        }
+
+        if (event.label) {
+          appendRunLog(event.label);
+        }
+      }
+      function bindEvents() {
+        $('new-chat').addEventListener('click', resetChat);
+        document.querySelector('.session-item').addEventListener('click', () => switchView('chat'));
+        $('open-settings').addEventListener('click', () => switchView('settings'));
+        $('transport').addEventListener('change', updateTransportFields);
+        $('send-button').addEventListener('click', sendMessage);
+        $('save-settings').addEventListener('click', saveSettings);
+        $('test-connection').addEventListener('click', testConnection);
+        $('save-plan').addEventListener('click', savePlan);
+        $('prompt-input').addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            sendMessage();
+          }
+        });
+      }
+      async function init() {
+        $('version-info').textContent = `Chrome ${window.deepcode.versions.chrome} · Electron ${window.deepcode.versions.electron}`;
+        bindEvents();
+        window.deepcode.onAgentEvent(handleAgentEvent);
+        await loadSettings();
+        addMessage('agent', '你好，我是 DeepCode Code Agent。请描述你想实现的功能或修改。');
+      }
+      init().catch((error) => {
+        addMessage('error', error.message);
+        setStatus('Error', 'error');
+      });
+    </script>
   </body>
 </html>
