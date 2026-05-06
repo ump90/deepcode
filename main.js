@@ -1,10 +1,12 @@
 const { app, BrowserWindow, ipcMain, Menu } = require('electron');
 const path = require('path');
-const { sendMessage, testConnection } = require('./src/main/codexClient');
+const { testConnection } = require('./src/main/codexClient');
+const { CodexSessionManager } = require('./src/main/codexSessionManager');
 const { savePlan } = require('./src/main/planWriter');
 const { createSettingsStore } = require('./src/main/settings');
 
 let settingsStore;
+let sessionManager;
 
 function emitAgentEvent(webContents, event) {
   if (!webContents.isDestroyed()) {
@@ -32,7 +34,35 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('agent:send-message', async (event, payload) => {
     const settings = await settingsStore.readSettings();
-    return sendMessage(payload, settings, (agentEvent) => emitAgentEvent(event.sender, agentEvent));
+    return sessionManager.sendMessage(payload, settings, (agentEvent) => emitAgentEvent(event.sender, agentEvent));
+  });
+  ipcMain.handle('agent:new-thread', async (_event, payload = {}) => {
+    const settings = await settingsStore.readSettings();
+    return sessionManager.startThread(settings, payload);
+  });
+  ipcMain.handle('agent:list-threads', async (_event, payload = {}) => {
+    const settings = await settingsStore.readSettings();
+    return sessionManager.listThreads(settings, payload);
+  });
+  ipcMain.handle('agent:resume-thread', async (_event, payload = {}) => {
+    const settings = await settingsStore.readSettings();
+    return sessionManager.resumeThread(settings, payload);
+  });
+  ipcMain.handle('agent:read-thread', async (_event, payload = {}) => {
+    const settings = await settingsStore.readSettings();
+    return sessionManager.readThread(settings, payload);
+  });
+  ipcMain.handle('agent:unsubscribe-thread', async (_event, payload = {}) => {
+    const settings = await settingsStore.readSettings();
+    return sessionManager.unsubscribeThread(settings, payload);
+  });
+  ipcMain.handle('agent:interrupt-turn', async (_event, payload = {}) => {
+    const settings = await settingsStore.readSettings();
+    return sessionManager.interruptTurn(settings, payload);
+  });
+  ipcMain.handle('agent:steer-turn', async (_event, payload = {}) => {
+    const settings = await settingsStore.readSettings();
+    return sessionManager.steerTurn(settings, payload);
   });
   ipcMain.handle('agent:test-connection', async (_event, partialSettings) => {
     const currentSettings = await settingsStore.readSettings();
@@ -73,6 +103,7 @@ app.whenReady().then(() => {
   });
 
   registerIpcHandlers();
+  sessionManager = new CodexSessionManager();
   createWindow();
 
   app.on('activate', () => {
@@ -86,4 +117,8 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  sessionManager?.close();
 });

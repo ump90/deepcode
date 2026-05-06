@@ -70,18 +70,12 @@
             </div>
 
             <div class="nav-section conversations">
-              <div class="section-label row-label"><span>对话</span><span>≡</span></div>
-              <button class="session-item active" type="button" data-view="chat">
-                <span>修复对话报错</span>
-                <span class="item-time">10 分</span>
-              </button>
-              <button class="session-item" type="button" data-view="chat">
-                <span>优化项目文档</span>
-                <span class="item-time">1 小时</span>
-              </button>
-              <button class="session-item empty" type="button" data-view="chat">
-                <span>暂无聊天</span>
-              </button>
+              <div class="section-label row-label"><span>对话</span><button id="refresh-threads" class="mini-action" type="button" title="刷新对话">↻</button></div>
+              <div id="thread-list" class="thread-list">
+                <button class="session-item empty" type="button" data-view="chat">
+                  <span>暂无聊天</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -113,6 +107,7 @@
                   </div>
                   <div class="composer-tools">
                     <button class="icon-button composer-tool" type="button" title="语音">◌</button>
+                    <button id="interrupt-button" class="icon-button composer-tool danger-tool" type="button" title="取消运行" hidden>□</button>
                     <button id="send-button" class="send-button" type="button" title="发送">↑</button>
                   </div>
                 </div>
@@ -201,9 +196,12 @@
         settings: {},
         conversationId: null,
         turnId: null,
+        threads: [],
+        threadListLoaded: false,
         currentRequest: '',
         latestPlan: '',
         sending: false,
+        interrupting: false,
         activeRequestId: '',
         streamContent: '',
         activeAgentMessage: null,
@@ -322,6 +320,67 @@
         $('toolbar-model').textContent = model;
         $('composer-model').textContent = model;
       }
+      function formatThreadTitle(thread) {
+        if (!thread) return '未命名对话';
+        return thread.name || thread.preview || `对话 ${String(thread.id || '').slice(0, 8)}`;
+      }
+      function formatThreadTime(timestamp) {
+        if (!timestamp) return '';
+        const date = new Date(timestamp * 1000);
+        const diff = Date.now() - date.getTime();
+        if (diff < 60 * 1000) return '刚刚';
+        if (diff < 60 * 60 * 1000) return `${Math.max(1, Math.round(diff / 60000))} 分`;
+        if (diff < 24 * 60 * 60 * 1000) return `${Math.round(diff / 3600000)} 小时`;
+        return date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+      }
+      function renderThreadList() {
+        const list = $('thread-list');
+        list.innerHTML = '';
+        if (!state.threads.length) {
+          const empty = document.createElement('button');
+          empty.className = 'session-item empty';
+          empty.type = 'button';
+          empty.innerHTML = '<span>暂无聊天</span>';
+          empty.addEventListener('click', () => switchView('chat'));
+          list.appendChild(empty);
+          return;
+        }
+
+        state.threads.forEach((thread) => {
+          const item = document.createElement('button');
+          item.className = `session-item${thread.id === state.conversationId ? ' active' : ''}`;
+          item.type = 'button';
+          item.dataset.threadId = thread.id;
+          const title = document.createElement('span');
+          title.textContent = formatThreadTitle(thread);
+          const time = document.createElement('span');
+          time.className = 'item-time';
+          time.textContent = formatThreadTime(thread.updatedAt);
+          item.append(title, time);
+          item.addEventListener('click', () => resumeThread(thread.id));
+          list.appendChild(item);
+        });
+      }
+      async function loadThreads() {
+        if ((state.settings.transport || 'mock') === 'mock') {
+          state.threads = state.conversationId
+            ? [{ id: state.conversationId, preview: 'Mock 对话', updatedAt: Math.floor(Date.now() / 1000) }]
+            : [];
+          renderThreadList();
+          return;
+        }
+
+        try {
+          const result = await window.deepcode.listThreads({ limit: 30 });
+          state.threads = result.threads || [];
+          state.threadListLoaded = true;
+          renderThreadList();
+        } catch (error) {
+          state.threads = [];
+          renderThreadList();
+          appendRunLog(`对话列表加载失败：${error.message}`);
+        }
+      }
       function updateTransportFields() {
         const transport = $('transport').value;
         const isWebSocket = transport === 'websocket';
@@ -355,20 +414,67 @@
         document.body.dataset.view = view;
         $('chat-view').classList.toggle('active', view === 'chat');
         $('settings-view').classList.toggle('active', view === 'settings');
-        document.querySelectorAll('.session-item').forEach((item, index) => {
-          item.classList.toggle('active', view === 'chat' && index === 0);
-        });
+        renderThreadList();
         $('open-settings').classList.toggle('active', view === 'settings');
-        $('view-title').textContent = view === 'settings' ? '设置' : '修复对话报错';
+        $('view-title').textContent = view === 'settings' ? '设置' : (state.conversationId ? 'Agent 对话' : '新对话');
       }
       async function loadSettings() {
         state.settings = await window.deepcode.getSettings();
         fillSettingsForm();
         updateMeta();
+        await loadThreads();
+      }
+      function setComposerRunning(isRunning) {
+        $('send-button').textContent = isRunning ? '↵' : '↑';
+        $('send-button').title = isRunning ? '追加输入' : '发送';
+        $('send-button').disabled = false;
+        $('interrupt-button').hidden = !isRunning;
+        $('interrupt-button').disabled = false;
+        $('prompt-input').disabled = false;
+      }
+      async function steerTurn() {
+        const message = $('prompt-input').value.trim();
+        if (!message || !state.sending) return;
+        $('prompt-input').value = '';
+        addMessage('user', `追加输入：${message}`);
+        appendRunLog('发送追加输入');
+        try {
+          await window.deepcode.steerTurn({
+            conversationId: state.conversationId,
+            turnId: state.turnId,
+            message,
+          });
+        } catch (error) {
+          addMessage('error', error.message);
+          appendRunLog(`追加输入失败：${error.message}`);
+        }
+      }
+      async function interruptTurn() {
+        if (!state.sending || state.interrupting) return;
+        state.interrupting = true;
+        $('interrupt-button').disabled = true;
+        appendRunLog('请求取消运行');
+        setStatus('Cancelling', 'running');
+        try {
+          await window.deepcode.interruptTurn({
+            conversationId: state.conversationId,
+            turnId: state.turnId,
+          });
+        } catch (error) {
+          addMessage('error', error.message);
+          appendRunLog(`取消失败：${error.message}`);
+          $('interrupt-button').disabled = false;
+        } finally {
+          state.interrupting = false;
+        }
       }
       async function sendMessage() {
         const message = $('prompt-input').value.trim();
-        if (!message || state.sending) return;
+        if (state.sending) {
+          await steerTurn();
+          return;
+        }
+        if (!message) return;
         const requestId = createRequestId();
         state.sending = true;
         state.activeRequestId = requestId;
@@ -376,8 +482,7 @@
         state.streamContent = '';
         state.activeAgentMessage = null;
         resetTurnSummary();
-        $('send-button').disabled = true;
-        $('prompt-input').disabled = true;
+        setComposerRunning(true);
         $('prompt-input').value = '';
         resetRunLog();
         setStatus('Running', 'running');
@@ -408,6 +513,7 @@
           appendRunLog(response.isMock ? 'Mock 完成' : `Turn 完成：${response.turnId || ''}`.trim());
           completeTurnSummary();
           setStatus(response.isMock ? 'Mock Ready' : 'Done');
+          await loadThreads();
         } catch (error) {
           if (state.activeAgentMessage && !state.streamContent) {
             state.activeAgentMessage.remove();
@@ -420,8 +526,7 @@
           state.sending = false;
           state.activeRequestId = '';
           state.activeAgentMessage = null;
-          $('send-button').disabled = false;
-          $('prompt-input').disabled = false;
+          setComposerRunning(false);
           $('prompt-input').focus();
         }
       }
@@ -430,6 +535,7 @@
         state.settings = await window.deepcode.saveSettings(collectSettingsForm());
         fillSettingsForm();
         updateMeta();
+        await loadThreads();
         $('settings-notice').textContent = '设置已保存。';
       }
       async function testConnection() {
@@ -452,7 +558,37 @@
         });
         $('plan-notice').textContent = `已保存：${result.filePath}`;
       }
-      function resetChat() {
+      async function resumeThread(threadId) {
+        if (!threadId || state.sending) return;
+        switchView('chat');
+        resetTurnSummary();
+        $('messages').innerHTML = '';
+        state.emptyStateMessage = null;
+        state.streamContent = '';
+        state.activeAgentMessage = null;
+        resetRunLog();
+        setStatus('Loading', 'running');
+        try {
+          const result = await window.deepcode.resumeThread({ threadId });
+          state.conversationId = result.conversationId || threadId;
+          state.turnId = null;
+          state.currentRequest = '';
+          state.latestPlan = '';
+          $('plan-box').textContent = '已恢复历史对话。继续发送消息会沿用该 thread。';
+          $('plan-summary').textContent = '已恢复';
+          $('save-plan').disabled = true;
+          addEventLine(`已恢复对话 ${String(state.conversationId).slice(0, 8)}`);
+          appendRunLog(`Thread resumed: ${state.conversationId}`);
+          setStatus('Ready');
+          renderThreadList();
+        } catch (error) {
+          addMessage('error', error.message);
+          appendRunLog(`恢复失败：${error.message}`);
+          setStatus('Error', 'error');
+        }
+      }
+      async function resetChat() {
+        if (state.sending) return;
         state.conversationId = null;
         state.turnId = null;
         state.currentRequest = '';
@@ -469,9 +605,36 @@
         setStatus('Ready');
         switchView('chat');
         showEmptyState();
+        if ((state.settings.transport || 'mock') !== 'mock') {
+          try {
+            const result = await window.deepcode.newThread({});
+            state.conversationId = result.conversationId || null;
+            await loadThreads();
+            switchView('chat');
+          } catch (error) {
+            addMessage('error', error.message);
+            setStatus('Error', 'error');
+          }
+        } else {
+          await loadThreads();
+        }
       }
       function handleAgentEvent(event) {
         if (!event || event.requestId !== state.activeRequestId) {
+          return;
+        }
+
+        if (event.conversationId) {
+          state.conversationId = event.conversationId;
+          renderThreadList();
+        }
+        if (event.turnId) {
+          state.turnId = event.turnId;
+        }
+
+        if (event.type === 'serverRequest') {
+          addEventLine(event.label || `需要客户端处理：${event.rawMethod || 'unknown'}`, 'approval');
+          appendRunLog(event.label || `Server request: ${event.rawMethod || 'unknown'}`);
           return;
         }
 
@@ -499,13 +662,12 @@
         }
       }
       function bindEvents() {
-        $('new-chat').addEventListener('click', resetChat);
-        document.querySelectorAll('.session-item').forEach((item) => {
-          item.addEventListener('click', () => switchView('chat'));
-        });
+        $('new-chat').addEventListener('click', () => resetChat());
+        $('refresh-threads').addEventListener('click', () => loadThreads());
         $('open-settings').addEventListener('click', () => switchView('settings'));
         $('transport').addEventListener('change', updateTransportFields);
         $('send-button').addEventListener('click', sendMessage);
+        $('interrupt-button').addEventListener('click', interruptTurn);
         $('save-settings').addEventListener('click', saveSettings);
         $('test-connection').addEventListener('click', testConnection);
         $('save-plan').addEventListener('click', savePlan);

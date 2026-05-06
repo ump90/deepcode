@@ -1,6 +1,8 @@
 const { StdioJsonRpcPeer, WebSocketJsonRpcPeer } = require('./codexJsonRpc');
+const { CodexSessionManager } = require('./codexSessionManager');
 
 const TURN_TIMEOUT_MS = 10 * 60 * 1000;
+const sharedSessionManager = new CodexSessionManager();
 
 function getRequestId(payload) {
   return payload.requestId || `request-${Date.now()}`;
@@ -58,6 +60,68 @@ function getTurnError(turn) {
   return turn?.error?.message || turn?.error?.codexErrorInfo?.type || 'Codex turn failed.';
 }
 
+function formatStatus(status) {
+  if (!status) {
+    return 'unknown';
+  }
+
+  if (typeof status === 'string') {
+    return status;
+  }
+
+  return status.type || 'unknown';
+}
+
+function summarizeServerRequest(method) {
+  const labels = {
+    'item/commandExecution/requestApproval': '命令执行需要审批',
+    'item/fileChange/requestApproval': '文件变更需要审批',
+    'item/tool/requestUserInput': '工具需要用户输入',
+    'item/permissions/requestApproval': '权限提升需要审批',
+    'mcpServer/elicitation/request': 'MCP 工具需要用户确认',
+    'item/tool/call': '动态工具调用需要客户端处理',
+    applyPatchApproval: '补丁应用需要审批',
+    execCommandApproval: '命令执行需要审批',
+  };
+
+  return labels[method] || `需要客户端处理：${method}`;
+}
+
+function getDefaultServerRequestResponse(method) {
+  if (method === 'item/commandExecution/requestApproval') {
+    return { decision: 'decline' };
+  }
+
+  if (method === 'item/fileChange/requestApproval') {
+    return { decision: 'decline' };
+  }
+
+  if (method === 'item/tool/requestUserInput') {
+    return { answers: {} };
+  }
+
+  if (method === 'mcpServer/elicitation/request') {
+    return { action: 'decline', content: null, _meta: null };
+  }
+
+  if (method === 'item/permissions/requestApproval') {
+    return { permissions: {}, scope: 'turn' };
+  }
+
+  if (method === 'item/tool/call') {
+    return {
+      contentItems: [{ type: 'inputText', text: 'DeepCode V1 does not handle dynamic tool calls yet.' }],
+      success: false,
+    };
+  }
+
+  if (method === 'applyPatchApproval' || method === 'execCommandApproval') {
+    return { decision: 'denied' };
+  }
+
+  return null;
+}
+
 async function initializePeer(peer) {
   const result = await peer.request('initialize', {
     clientInfo: {
@@ -65,6 +129,7 @@ async function initializePeer(peer) {
       title: 'DeepCode',
       version: '0.1.0',
     },
+    capabilities: null,
   });
   peer.notify('initialized', {});
   return result;
@@ -81,7 +146,7 @@ function buildThreadParams(settings) {
 function buildTurnParams(payload, settings, threadId) {
   return {
     threadId,
-    input: [{ type: 'text', text: payload.message }],
+    input: [{ type: 'text', text: payload.message, text_elements: [] }],
     ...(payload.model || settings.model ? { model: payload.model || settings.model } : {}),
     ...(payload.workspacePath || settings.workspacePath ? { cwd: payload.workspacePath || settings.workspacePath } : {}),
   };
@@ -145,11 +210,21 @@ async function waitForTurn(peer, payload, emit) {
     }
 
     function onServerRequest(message) {
+      const response = getDefaultServerRequestResponse(message.method);
+      const decision = response ? '已自动拒绝，等待后续审批 UI 接入' : '暂不支持';
       emitEvent(emit, payload, {
-        type: 'event',
-        label: `需要客户端处理：${message.method}`,
+        type: 'serverRequest',
+        label: `${summarizeServerRequest(message.method)}（${decision}）`,
+        rawMethod: message.method,
+        rawParams: message.params,
       });
-      peer.respondError(message.id, -32601, 'DeepCode V1 does not handle server requests yet.');
+
+      if (response) {
+        peer.respond(message.id, response);
+        return;
+      }
+
+      peer.respondError(message.id, -32601, 'DeepCode V1 does not handle this server request yet.');
     }
 
     function onNotification(message) {
@@ -201,11 +276,26 @@ async function waitForTurn(peer, payload, emit) {
         return;
       }
 
-      if (method === 'item/commandExecution/outputDelta') {
+      if (method === 'item/commandExecution/outputDelta' || method === 'command/exec/outputDelta') {
         emitEvent(emit, payload, {
           type: 'event',
-          label: 'Command output streamed',
+          label: method === 'command/exec/outputDelta' ? 'Standalone command output streamed' : 'Command output streamed',
         });
+        return;
+      }
+
+      if (method === 'turn/diff/updated') {
+        emitEvent(emit, payload, { type: 'event', label: 'Diff updated' });
+        return;
+      }
+
+      if (method === 'thread/status/changed') {
+        emitEvent(emit, payload, { type: 'event', label: `Thread status changed: ${formatStatus(params?.status)}` });
+        return;
+      }
+
+      if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
+        emitEvent(emit, payload, { type: 'event', label: 'Reasoning streamed' });
         return;
       }
 
@@ -234,7 +324,15 @@ async function waitForTurn(peer, payload, emit) {
           content,
           plan: finalPlanText || streamedPlanText || lastPlanUpdate || content,
         });
+        return;
       }
+
+      emitEvent(emit, payload, {
+        type: 'event',
+        label: `Codex event: ${method}`,
+        rawMethod: method,
+        rawParams: params,
+      });
     }
 
     peer.on('notification', onNotification);
@@ -293,23 +391,7 @@ async function sendJsonRpcMessage(payload, settings, emit) {
 }
 
 async function sendMessage(payload, settings, emit = () => {}) {
-  if (!payload.message || !payload.message.trim()) {
-    throw new Error('消息不能为空。');
-  }
-
-  if (settings.transport === 'mock') {
-    const content = createMockPlan(payload.message, settings);
-    emitEvent(emit, payload, { type: 'done', label: 'Mock turn completed' });
-    return {
-      conversationId: payload.conversationId || `mock-${Date.now()}`,
-      content,
-      plan: content,
-      isMock: true,
-      transport: 'mock',
-    };
-  }
-
-  return sendJsonRpcMessage(payload, settings, emit);
+  return sharedSessionManager.sendMessage(payload, settings, emit);
 }
 
 async function testConnection(settings) {

@@ -1,0 +1,16 @@
+{
+  "generatedAt": "2026-05-06",
+  "codexCliVersion": "codex-cli 0.128.0",
+  "commands": [
+    "codex app-server generate-ts --out ./schemas/codex-app-server",
+    "codex app-server generate-json-schema --out ./schemas/codex-app-server"
+  ],
+  "transport": {
+    "default": "stdio",
+    "experimental": ["websocket"]
+  },
+  "notes": [
+    "Generated from the local Codex CLI installed on this workstation.",
+    "Regenerate this directory whenever the Codex CLI version changes."
+  ]
+}

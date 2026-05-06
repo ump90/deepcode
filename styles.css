@@ -266,7 +266,8 @@ textarea {
 
 .primary-nav,
 .nav-section,
-.conversations {
+.conversations,
+.thread-list {
   display: grid;
   gap: 4px;
 }
@@ -295,6 +296,20 @@ textarea {
   padding: 0 10px;
   color: #9ba5ad;
   font-size: 12px;
+}
+
+.mini-action {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  color: #8a949e;
+}
+
+.mini-action:hover {
+  background: var(--sidebar-hover);
+  color: #5f6b76;
 }
 
 .project-item {
@@ -502,6 +517,17 @@ textarea {
   background: #eef0f2;
 }
 
+.timeline-event.approval {
+  color: #b45309;
+}
+
+.timeline-event.approval::before {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #b45309;
+  content: "!";
+}
+
 .composer {
   position: absolute;
   right: 0;
@@ -597,6 +623,15 @@ textarea::placeholder {
 
 .send-button:hover {
   background: #1f2328;
+}
+
+.danger-tool {
+  border: 1px solid #fecaca;
+  color: var(--danger);
+}
+
+.danger-tool:hover {
+  background: #fef2f2;
 }
 
 .text-send {

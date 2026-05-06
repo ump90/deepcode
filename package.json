@@ -4,7 +4,9 @@
   "description": "A basic Electron application.",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "smoke:app-server": "node scripts/smoke-app-server.js",
+    "smoke:session-manager": "node scripts/smoke-session-manager.js"
   },
   "keywords": [],
   "author": "",
