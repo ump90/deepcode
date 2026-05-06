@@ -2,6 +2,7 @@ const { StdioJsonRpcPeer, WebSocketJsonRpcPeer } = require('./codexJsonRpc');
 
 const TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const SERVER_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+const COMMAND_OUTPUT_FLUSH_MS = 120;
 const SENSITIVE_KEY_PATTERN = /(api[_-]?key|authorization|bearer|password|secret|token)/i;
 
 function getRequestId(payload = {}) {
@@ -68,6 +69,111 @@ function formatStatus(status) {
   }
 
   return status.type || 'unknown';
+}
+
+function formatDuration(durationMs) {
+  if (durationMs == null) {
+    return '';
+  }
+
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(1)}s`;
+}
+
+function shortenText(value, maxLength = 90) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength - 1)}…`;
+}
+
+function normalizePatchKind(kind) {
+  if (!kind) {
+    return 'update';
+  }
+
+  if (typeof kind === 'string') {
+    return kind;
+  }
+
+  return kind.type || 'update';
+}
+
+function normalizeFileChanges(changes) {
+  return Array.isArray(changes)
+    ? changes.map((change) => ({
+      path: change.path || '',
+      kind: normalizePatchKind(change.kind),
+      diff: change.diff || '',
+    })).filter((change) => change.path || change.diff)
+    : [];
+}
+
+function countDiffStats(diff) {
+  const stats = {
+    insertions: 0,
+    deletions: 0,
+    files: 0,
+  };
+  const files = new Set();
+
+  for (const line of String(diff || '').split(/\r?\n/)) {
+    if (line.startsWith('diff --git ')) {
+      files.add(line);
+      continue;
+    }
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      stats.insertions += 1;
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      stats.deletions += 1;
+    }
+  }
+
+  stats.files = files.size;
+  return stats;
+}
+
+function normalizePlan(plan) {
+  return Array.isArray(plan)
+    ? plan.map((item) => ({
+      step: item.step || '',
+      status: item.status || 'pending',
+    })).filter((item) => item.step)
+    : [];
+}
+
+function normalizeCommandItem(item = {}) {
+  return {
+    id: item.id || '',
+    command: redactSensitiveText(item.command || ''),
+    cwd: item.cwd || '',
+    status: item.status || '',
+    exitCode: item.exitCode ?? null,
+    durationMs: item.durationMs ?? null,
+    durationLabel: formatDuration(item.durationMs),
+    output: redactSensitiveText(item.aggregatedOutput || ''),
+    source: item.source || '',
+  };
+}
+
+function normalizeFileChangeItem(item = {}) {
+  return {
+    id: item.id || '',
+    status: item.status || '',
+    changes: normalizeFileChanges(item.changes),
+  };
+}
+
+function buildRaw(method, params) {
+  return {
+    rawMethod: method,
+    rawParams: sanitizeForRenderer(params),
+  };
 }
 
 function summarizeServerRequest(method) {
@@ -430,6 +536,8 @@ class CodexSessionManager {
 
   cleanupTurnState(state) {
     clearTimeout(state.timer);
+    this.flushCommandOutput(state);
+    this.clearCommandOutputTimers(state);
     this.cancelPendingServerRequestsForState(state);
     if (state.turnId) {
       this.turnStates.delete(state.turnId);
@@ -480,6 +588,11 @@ class CodexSessionManager {
       finalPlanText: '',
       lastPlanUpdate: '',
       timer: null,
+      commands: new Map(),
+      commandOutputBuffers: new Map(),
+      commandOutputTimers: new Map(),
+      fileChanges: new Map(),
+      latestDiff: '',
       resolve: null,
       reject: null,
       promise: null,
@@ -504,6 +617,71 @@ class CodexSessionManager {
       return;
     }
     emitEvent(state.emit, state.payload, event);
+  }
+
+  clearCommandOutputTimers(state) {
+    if (!state?.commandOutputTimers) {
+      return;
+    }
+
+    for (const timer of state.commandOutputTimers.values()) {
+      clearTimeout(timer);
+    }
+    state.commandOutputTimers.clear();
+  }
+
+  flushCommandOutput(state, itemId) {
+    if (!state) {
+      return;
+    }
+
+    const targetIds = itemId ? [itemId] : [...state.commandOutputBuffers.keys()];
+    for (const targetId of targetIds) {
+      const buffered = state.commandOutputBuffers.get(targetId);
+      if (!buffered) {
+        continue;
+      }
+
+      const timer = state.commandOutputTimers.get(targetId);
+      if (timer) {
+        clearTimeout(timer);
+        state.commandOutputTimers.delete(targetId);
+      }
+
+      state.commandOutputBuffers.delete(targetId);
+      this.emitTurnEvent(state, {
+        type: 'commandOutput',
+        label: `命令输出 ${buffered.delta.length} 字符`,
+        itemId: targetId,
+        delta: buffered.delta,
+        stream: buffered.stream,
+        ...buildRaw(buffered.rawMethod, buffered.rawParams),
+      });
+    }
+  }
+
+  appendCommandOutput(state, itemId, delta, stream, rawMethod, rawParams) {
+    if (!state || !delta) {
+      return;
+    }
+
+    const targetId = itemId || 'command-output';
+    const previous = state.commandOutputBuffers.get(targetId);
+    state.commandOutputBuffers.set(targetId, {
+      delta: `${previous?.delta || ''}${redactSensitiveText(delta)}`,
+      stream: stream || previous?.stream || 'output',
+      rawMethod,
+      rawParams,
+    });
+
+    if (state.commandOutputTimers.has(targetId)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.flushCommandOutput(state, targetId);
+    }, COMMAND_OUTPUT_FLUSH_MS);
+    state.commandOutputTimers.set(targetId, timer);
   }
 
   onServerRequest(message) {
@@ -543,7 +721,7 @@ class CodexSessionManager {
       type: 'serverRequest',
       label: `${summarizeServerRequest(message.method)}（${decision}）`,
       rawMethod: message.method,
-      rawParams: message.params,
+      rawParams: sanitizeForRenderer(message.params),
     });
 
     if (response) {
@@ -596,6 +774,80 @@ class CodexSessionManager {
     return { ok: true, response };
   }
 
+  emitItemEvent(state, method, params = {}) {
+    const item = params.item;
+    if (!item) {
+      this.emitTurnEvent(state, {
+        type: 'event',
+        label: method === 'item/started' ? 'Item started' : 'Item completed',
+        ...buildRaw(method, params),
+      });
+      return;
+    }
+
+    const phase = method === 'item/started' ? 'started' : 'completed';
+
+    if (item.type === 'commandExecution') {
+      const command = normalizeCommandItem(item);
+      if (state && command.id) {
+        state.commands.set(command.id, command);
+      }
+      if (phase === 'completed') {
+        this.flushCommandOutput(state, command.id);
+      }
+
+      const status = command.status || phase;
+      const exit = command.exitCode == null ? '' : ` · exit ${command.exitCode}`;
+      const duration = command.durationLabel ? ` · ${command.durationLabel}` : '';
+      this.emitTurnEvent(state, {
+        type: 'command',
+        label: `${phase === 'started' ? '运行命令' : '命令结束'}：${shortenText(command.command)}${exit}${duration}`,
+        phase,
+        command,
+        status,
+        itemId: command.id,
+        ...buildRaw(method, params),
+      });
+      return;
+    }
+
+    if (item.type === 'fileChange') {
+      const fileChange = normalizeFileChangeItem(item);
+      if (state && fileChange.id) {
+        state.fileChanges.set(fileChange.id, fileChange);
+      }
+
+      this.emitTurnEvent(state, {
+        type: 'fileChange',
+        label: `文件变更：${fileChange.changes.length || 0} 个文件 · ${fileChange.status || phase}`,
+        phase,
+        fileChange,
+        itemId: fileChange.id,
+        ...buildRaw(method, params),
+      });
+      return;
+    }
+
+    if (item.type === 'reasoning') {
+      this.emitTurnEvent(state, {
+        type: 'reasoning',
+        label: phase === 'started' ? '开始推理摘要' : '推理摘要已更新',
+        summary: Array.isArray(item.summary) ? item.summary : [],
+        content: Array.isArray(item.content) ? item.content : [],
+        itemId: item.id || '',
+        ...buildRaw(method, params),
+      });
+      return;
+    }
+
+    this.emitTurnEvent(state, {
+      type: 'event',
+      label: `${item.type || 'item'} ${phase}`,
+      itemId: item.id || '',
+      ...buildRaw(method, params),
+    });
+  }
+
   cancelPendingServerRequestsForState(state) {
     if (!state?.pendingServerRequestIds?.size) {
       return;
@@ -631,6 +883,7 @@ class CodexSessionManager {
         type: 'turnStarted',
         label: 'Turn started',
         turnId: params?.turn?.id || state?.turnId || null,
+        ...buildRaw(method, params),
       });
       return;
     }
@@ -640,7 +893,7 @@ class CodexSessionManager {
       if (state) {
         state.streamedAgentText += delta;
       }
-      this.emitTurnEvent(state, { type: 'delta', delta, content: state?.streamedAgentText || delta });
+      this.emitTurnEvent(state, { type: 'delta', delta, content: state?.streamedAgentText || delta, ...buildRaw(method, params) });
       return;
     }
 
@@ -649,21 +902,27 @@ class CodexSessionManager {
       if (state) {
         state.streamedPlanText += delta;
       }
-      this.emitTurnEvent(state, { type: 'planDelta', delta, content: state?.streamedPlanText || delta });
+      this.emitTurnEvent(state, { type: 'planDelta', delta, content: state?.streamedPlanText || delta, ...buildRaw(method, params) });
       return;
     }
 
     if (method === 'turn/plan/updated') {
+      const plan = normalizePlan(params?.plan);
       if (state) {
-        state.lastPlanUpdate = formatPlanUpdate(params?.plan);
+        state.lastPlanUpdate = formatPlanUpdate(plan);
       }
-      this.emitTurnEvent(state, { type: 'plan', content: state?.lastPlanUpdate || '' });
+      this.emitTurnEvent(state, {
+        type: 'plan',
+        content: state?.lastPlanUpdate || '',
+        explanation: params?.explanation || '',
+        plan,
+        ...buildRaw(method, params),
+      });
       return;
     }
 
     if (method === 'item/started') {
-      const itemType = params?.item?.type || 'item';
-      this.emitTurnEvent(state, { type: 'event', label: `${itemType} started` });
+      this.emitItemEvent(state, method, params);
       return;
     }
 
@@ -671,36 +930,96 @@ class CodexSessionManager {
       const item = params?.item;
       if (state && item?.type === 'agentMessage' && item.text) {
         state.finalAgentText = item.text;
-        this.emitTurnEvent(state, { type: 'delta', delta: '', content: state.finalAgentText });
+        this.emitTurnEvent(state, { type: 'delta', delta: '', content: state.finalAgentText, ...buildRaw(method, params) });
       }
       if (state && item?.type === 'plan' && item.text) {
         state.finalPlanText = item.text;
-        this.emitTurnEvent(state, { type: 'plan', content: state.finalPlanText });
+        this.emitTurnEvent(state, { type: 'plan', content: state.finalPlanText, ...buildRaw(method, params) });
       }
-      this.emitTurnEvent(state, { type: 'event', label: `${item?.type || 'item'} completed` });
+      this.emitItemEvent(state, method, params);
       return;
     }
 
     if (method === 'item/commandExecution/outputDelta' || method === 'command/exec/outputDelta') {
+      this.appendCommandOutput(state, params?.itemId || params?.commandId, extractDelta(params), params?.stream || 'output', method, params);
+      return;
+    }
+
+    if (method === 'item/fileChange/outputDelta') {
       this.emitTurnEvent(state, {
-        type: 'event',
-        label: method === 'command/exec/outputDelta' ? 'Standalone command output streamed' : 'Command output streamed',
+        type: 'fileChangeOutput',
+        label: '文件变更输出已更新',
+        itemId: params?.itemId || '',
+        delta: extractDelta(params),
+        ...buildRaw(method, params),
+      });
+      return;
+    }
+
+    if (method === 'item/fileChange/patchUpdated') {
+      const fileChange = {
+        id: params?.itemId || '',
+        status: 'inProgress',
+        changes: normalizeFileChanges(params?.changes),
+      };
+      if (state && fileChange.id) {
+        state.fileChanges.set(fileChange.id, fileChange);
+      }
+      this.emitTurnEvent(state, {
+        type: 'fileChange',
+        label: `文件 diff 更新：${fileChange.changes.length} 个文件`,
+        phase: 'updated',
+        fileChange,
+        itemId: fileChange.id,
+        ...buildRaw(method, params),
       });
       return;
     }
 
     if (method === 'turn/diff/updated') {
-      this.emitTurnEvent(state, { type: 'event', label: 'Diff updated' });
+      if (state) {
+        state.latestDiff = params?.diff || '';
+      }
+      const stats = countDiffStats(params?.diff);
+      this.emitTurnEvent(state, {
+        type: 'diffUpdated',
+        label: `Diff updated：${stats.files} 文件 +${stats.insertions} -${stats.deletions}`,
+        diff: params?.diff || '',
+        stats,
+        ...buildRaw(method, params),
+      });
       return;
     }
 
     if (method === 'thread/status/changed') {
-      this.emitTurnEvent(state, { type: 'event', label: `Thread status changed: ${formatStatus(params?.status)}` });
+      this.emitTurnEvent(state, {
+        type: 'threadStatus',
+        label: `Thread status changed: ${formatStatus(params?.status)}`,
+        status: formatStatus(params?.status),
+        ...buildRaw(method, params),
+      });
       return;
     }
 
     if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
-      this.emitTurnEvent(state, { type: 'event', label: 'Reasoning streamed' });
+      this.emitTurnEvent(state, {
+        type: 'reasoningDelta',
+        label: 'Reasoning streamed',
+        delta: extractDelta(params),
+        itemId: params?.itemId || '',
+        ...buildRaw(method, params),
+      });
+      return;
+    }
+
+    if (method === 'thread/tokenUsage/updated') {
+      const total = params?.tokenUsage?.total?.totalTokens ?? 0;
+      this.emitTurnEvent(state, {
+        type: 'tokenUsage',
+        label: `Token usage：${total}`,
+        tokenUsage: params?.tokenUsage || null,
+        ...buildRaw(method, params),
+      });
       return;
     }
 
@@ -744,8 +1063,7 @@ class CodexSessionManager {
     this.emitTurnEvent(state, {
       type: 'event',
       label: `Codex event: ${method}`,
-      rawMethod: method,
-      rawParams: params,
+      ...buildRaw(method, params),
     });
   }
 

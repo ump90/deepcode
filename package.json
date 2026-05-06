@@ -13,5 +13,8 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "latest"
+  },
+  "dependencies": {
+    "@pierre/diffs": "^1.1.20"
   }
 }

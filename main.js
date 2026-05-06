@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, Menu } = require('electron');
 const path = require('path');
 const { testConnection } = require('./src/main/codexClient');
 const { CodexSessionManager } = require('./src/main/codexSessionManager');
+const { readGitStatus } = require('./src/main/gitStatus');
 const { savePlan } = require('./src/main/planWriter');
 const { createSettingsStore } = require('./src/main/settings');
 
@@ -67,6 +68,10 @@ function registerIpcHandlers() {
   ipcMain.handle('agent:resolve-approval', async (_event, payload = {}) => {
     const settings = await settingsStore.readSettings();
     return sessionManager.resolveApproval(settings, payload);
+  });
+  ipcMain.handle('git:status', async (_event, payload = {}) => {
+    const settings = await settingsStore.readSettings();
+    return readGitStatus(payload.workspacePath || settings.workspacePath);
   });
   ipcMain.handle('agent:test-connection', async (_event, partialSettings) => {
     const currentSettings = await settingsStore.readSettings();

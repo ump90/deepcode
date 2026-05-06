@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('deepcode', {
   interruptTurn: (payload) => ipcRenderer.invoke('agent:interrupt-turn', payload),
   steerTurn: (payload) => ipcRenderer.invoke('agent:steer-turn', payload),
   resolveApproval: (payload) => ipcRenderer.invoke('agent:resolve-approval', payload),
+  getGitStatus: (payload) => ipcRenderer.invoke('git:status', payload),
   savePlan: (payload) => ipcRenderer.invoke('plan:save', payload),
   testConnection: (settings) => ipcRenderer.invoke('agent:test-connection', settings),
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),

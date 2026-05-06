@@ -102,11 +102,11 @@
                 <div class="composer-actions">
                   <div class="composer-tools">
                     <button class="icon-button composer-tool" type="button" title="添加">＋</button>
-                    <button class="tool-chip" type="button" title="自动审查">自动审查⌄</button>
-                    <button class="tool-chip" type="button" title="模型"><span id="composer-model">模型</span>⌄</button>
+                    <button class="tool-chip review-chip" type="button" title="自动审查"><span class="tool-icon"></span><span>自动审查</span><span class="chevron">⌄</span></button>
+                    <button class="tool-chip model-chip" type="button" title="模型"><span class="model-dot"></span><span id="composer-model">模型</span><span class="effort-label">高</span><span class="chevron">⌄</span></button>
                   </div>
                   <div class="composer-tools">
-                    <button class="icon-button composer-tool" type="button" title="语音">◌</button>
+                    <button class="icon-button composer-tool mic-tool" type="button" title="语音"></button>
                     <button id="interrupt-button" class="icon-button composer-tool danger-tool" type="button" title="取消运行" hidden>□</button>
                     <button id="send-button" class="send-button" type="button" title="发送">↑</button>
                   </div>
@@ -179,28 +179,38 @@
           </section>
         </main>
 
-        <aside class="branch-panel" aria-label="分支详情">
-          <div class="branch-card">
+        <aside class="right-rail" aria-label="右侧面板">
+          <section class="branch-panel" aria-label="分支详情">
+            <div class="branch-card">
             <div class="branch-heading">
               <h2>分支详情</h2>
               <button class="icon-button" type="button" title="更多">···</button>
             </div>
-            <div class="branch-row changes-row">
+            <button id="open-diff-panel" class="branch-row changes-row branch-row-button" type="button">
               <span class="branch-label">更改</span>
-              <span class="change-counts"><span class="insertions">+3,007</span> <span class="deletions">-46</span></span>
-            </div>
+              <span class="change-counts"><span id="git-insertions" class="insertions">+0</span> <span id="git-deletions" class="deletions">-0</span></span>
+            </button>
             <div class="branch-row">
-              <span class="branch-label">Git 操作</span>
-              <span class="branch-value">本地更改</span>
+              <span class="branch-label">当前分支</span>
+              <span id="git-branch" class="branch-value">加载中</span>
             </div>
             <div class="branch-row muted-row">
-              <span class="branch-label">GitHub CLI</span>
-              <span class="branch-value">不可用</span>
+              <span class="branch-label">Git 状态</span>
+              <span id="git-operation" class="branch-value">加载中</span>
             </div>
+            <div id="git-file-count" class="branch-hint">0 个文件</div>
             <div class="branch-actions">
               <button id="save-plan" class="secondary-button" type="button" disabled>保存计划</button>
               <button class="secondary-button ghost" type="button" disabled>发布 PR</button>
             </div>
+            <details class="branch-subsection branch-details" open>
+              <summary><span>命令输出</span><span id="command-summary">暂无命令</span></summary>
+              <div id="command-log" class="command-log">暂无命令。</div>
+            </details>
+            <details class="branch-subsection branch-details">
+              <summary><span>文件变更</span><span id="file-summary">暂无文件</span></summary>
+              <div id="file-log" class="file-log">暂无文件变更。</div>
+            </details>
             <details class="branch-subsection branch-details">
               <summary><span>运行事件</span><span id="run-summary">等待运行</span></summary>
               <div id="run-log" class="run-log">等待运行。</div>
@@ -210,7 +220,23 @@
               <div id="plan-box" class="plan-box">暂无计划。发送需求后，Agent 回复会显示在这里。</div>
               <div id="plan-notice" class="notice"></div>
             </details>
-          </div>
+            </div>
+          </section>
+          <section id="diff-panel" class="diff-panel" aria-label="代码差异" hidden>
+            <div id="diff-resizer" class="diff-resizer" role="separator" aria-orientation="vertical" title="拖拽调整宽度"></div>
+            <div class="diff-toolbar">
+              <div class="diff-title">
+                <button id="close-diff-panel" class="icon-button" type="button" title="关闭代码差异">‹</button>
+                <span>代码差异</span>
+              </div>
+              <div class="diff-actions">
+                <span id="diff-panel-summary">暂无 diff</span>
+                <button class="icon-button" type="button" title="布局">▯</button>
+              </div>
+            </div>
+            <div id="diff-file-list" class="diff-file-list">暂无文件变更。</div>
+            <div id="diff-view-content" class="diff-view-content">暂无 diff。</div>
+          </section>
         </aside>
       </div>
     </div>
@@ -249,11 +275,22 @@
         summaryCompleted: false,
         eventStats: {
           commands: 0,
+          files: 0,
         },
         emptyStateMessage: null,
         runLogCount: 0,
         pendingApprovals: new Map(),
         activeApprovalId: null,
+        commandRows: new Map(),
+        fileRows: new Map(),
+        commandCount: 0,
+        fileChangeCount: 0,
+        latestDiff: '',
+        latestDiffHtml: '',
+        diffFiles: [],
+        activeDiffPath: '',
+        diffPanelOpen: false,
+        gitStatus: null,
       };
       const $ = (id) => document.getElementById(id);
       function createRequestId() {
@@ -318,6 +355,7 @@
         state.summaryCompleted = false;
         state.eventStats = {
           commands: 0,
+          files: 0,
         };
       }
       function updateEventStats(label) {
@@ -333,6 +371,9 @@
         updateEventLine(state.activeSummaryEvent, `已处理 ${formatElapsed(state.turnStartedAt)}`);
         if (state.eventStats.commands > 0) {
           addEventLine(`已运行 ${state.eventStats.commands} 条命令`);
+        }
+        if (state.eventStats.files > 0) {
+          addEventLine(`已更新 ${state.eventStats.files} 个文件`);
         }
       }
       function appendRunLog(label) {
@@ -353,13 +394,299 @@
         $('run-log').textContent = '等待运行。';
         $('run-summary').textContent = '等待运行';
       }
+      function createCodeBlock(className, text = '') {
+        const block = document.createElement('pre');
+        block.className = className;
+        block.textContent = text;
+        return block;
+      }
+      function resetActivityPanels() {
+        state.commandRows.clear();
+        state.fileRows.clear();
+        state.commandCount = 0;
+        state.fileChangeCount = 0;
+        state.latestDiff = '';
+        state.latestDiffHtml = '';
+        state.diffFiles = [];
+        state.activeDiffPath = '';
+        $('command-log').textContent = '暂无命令。';
+        $('command-summary').textContent = '暂无命令';
+        $('file-log').textContent = '暂无文件变更。';
+        $('file-summary').textContent = '暂无文件';
+        $('diff-view-content').textContent = '暂无 diff。';
+        $('diff-panel-summary').textContent = '暂无 diff';
+        $('diff-file-list').textContent = '暂无文件变更。';
+      }
+      function formatStatusLabel(status) {
+        const labels = {
+          inProgress: '运行中',
+          completed: '完成',
+          failed: '失败',
+          declined: '已拒绝',
+          started: '开始',
+        };
+        return labels[status] || status || '未知';
+      }
+      function renderCommandEvent(event) {
+        const command = event.command || {};
+        const id = event.itemId || command.id || `command-${state.commandRows.size + 1}`;
+        let row = state.commandRows.get(id);
+        if (!row) {
+          if ($('command-log').textContent === '暂无命令。') {
+            $('command-log').textContent = '';
+          }
+          row = document.createElement('details');
+          row.className = 'command-entry';
+          row.open = true;
+          const summary = document.createElement('summary');
+          const status = document.createElement('span');
+          status.className = 'command-status';
+          const title = document.createElement('code');
+          title.className = 'command-title';
+          const meta = document.createElement('span');
+          meta.className = 'command-meta';
+          summary.append(status, title, meta);
+          const cwd = document.createElement('div');
+          cwd.className = 'command-cwd';
+          const output = createCodeBlock('command-output');
+          row.append(summary, cwd, output);
+          $('command-log').appendChild(row);
+          state.commandRows.set(id, row);
+          state.commandCount = state.commandRows.size;
+          $('command-summary').textContent = `${state.commandCount} 条命令`;
+        }
+
+        row.querySelector('.command-status').textContent = formatStatusLabel(command.status || event.status || event.phase);
+        row.querySelector('.command-title').textContent = command.command || '(空命令)';
+        row.querySelector('.command-meta').textContent = [
+          command.exitCode == null ? '' : `exit ${command.exitCode}`,
+          command.durationLabel || '',
+        ].filter(Boolean).join(' · ');
+        row.querySelector('.command-cwd').textContent = command.cwd || '';
+        const output = row.querySelector('.command-output');
+        if (command.output && !output.textContent) {
+          output.textContent = command.output;
+        }
+        row.dataset.status = command.status || event.status || event.phase || '';
+      }
+      function appendCommandOutput(event) {
+        const id = event.itemId || 'command-output';
+        if (!state.commandRows.has(id)) {
+          renderCommandEvent({ itemId: id, command: { id, command: '命令输出', status: 'inProgress' } });
+        }
+        const row = state.commandRows.get(id);
+        const output = row.querySelector('.command-output');
+        output.textContent = `${output.textContent || ''}${event.delta || ''}`;
+        output.scrollTop = output.scrollHeight;
+      }
+      function kindLabel(kind) {
+        const labels = {
+          add: '新增',
+          delete: '删除',
+          update: '修改',
+        };
+        return labels[kind] || kind || '变更';
+      }
+      function renderFileChange(event) {
+        const fileChange = event.fileChange || {};
+        const changes = Array.isArray(fileChange.changes) ? fileChange.changes : [];
+        if ($('file-log').textContent === '暂无文件变更。') {
+          $('file-log').textContent = '';
+        }
+        changes.forEach((change) => {
+          const key = `${fileChange.id || event.itemId || 'file'}:${change.path}`;
+          let row = state.fileRows.get(key);
+          if (!row) {
+            row = document.createElement('details');
+            row.className = 'file-entry';
+            const summary = document.createElement('summary');
+            const badge = document.createElement('span');
+            badge.className = 'file-kind';
+            const path = document.createElement('code');
+            path.className = 'file-path';
+            summary.append(badge, path);
+            const diff = createCodeBlock('file-diff');
+            row.append(summary, diff);
+            $('file-log').appendChild(row);
+            state.fileRows.set(key, row);
+          }
+          row.querySelector('.file-kind').textContent = kindLabel(change.kind);
+          row.querySelector('.file-path').textContent = change.path || '(未知文件)';
+          row.querySelector('.file-diff').textContent = change.diff || '';
+          row.open = Boolean(change.diff);
+        });
+        state.fileChangeCount = state.fileRows.size;
+        $('file-summary').textContent = state.fileChangeCount ? `${state.fileChangeCount} 个文件` : '暂无文件';
+      }
+      function renderDiffPreview({ diff = '', diffHtml = '', source = 'turn', preserveFileSelection = false } = {}) {
+        const nextDiff = diff || state.latestDiff;
+        state.latestDiff = nextDiff;
+        if (diffHtml) {
+          state.latestDiffHtml = diffHtml;
+        } else if (diff) {
+          state.latestDiffHtml = '';
+        }
+        const preview = $('diff-view-content');
+        const html = diffHtml || (!diff ? state.latestDiffHtml : '');
+        if (html) {
+          preview.innerHTML = html;
+          preview.dataset.renderer = 'pierre';
+        } else if (nextDiff) {
+          preview.innerHTML = '';
+          preview.appendChild(createCodeBlock('raw-diff', nextDiff));
+          preview.dataset.renderer = 'raw';
+        } else {
+          preview.textContent = '暂无 diff。';
+          preview.dataset.renderer = '';
+        }
+        const stats = nextDiff ? countDiffLines(nextDiff) : null;
+        $('diff-panel-summary').textContent = stats ? `${source} · ${stats.files} 文件 +${stats.insertions} -${stats.deletions}` : '暂无 diff';
+        if (!preserveFileSelection) {
+          state.activeDiffPath = '';
+          renderDiffFileList(state.diffFiles.length ? state.diffFiles : (state.gitStatus?.files || []));
+        }
+      }
+      function renderDiffFileList(files = []) {
+        const list = $('diff-file-list');
+        list.innerHTML = '';
+        if (!files.length) {
+          list.textContent = '暂无文件变更。';
+          return;
+        }
+        files.forEach((file) => {
+          const row = document.createElement('button');
+          const path = file.path || '(未知文件)';
+          row.className = `diff-file-item${path === state.activeDiffPath ? ' active' : ''}`;
+          row.type = 'button';
+          const name = document.createElement('span');
+          name.textContent = path;
+          const status = document.createElement('span');
+          if (file.insertions != null || file.deletions != null) {
+            status.innerHTML = `<span class="insertions">+${file.insertions || 0}</span> <span class="deletions">-${file.deletions || 0}</span>`;
+          } else {
+            status.textContent = file.label || file.status || '变更';
+          }
+          row.append(name, status);
+          row.addEventListener('click', () => selectDiffFile(path));
+          list.appendChild(row);
+        });
+      }
+      function selectDiffFile(path) {
+        const file = state.diffFiles.find((entry) => entry.path === path);
+        state.activeDiffPath = path;
+        renderDiffFileList(state.diffFiles.length ? state.diffFiles : (state.gitStatus?.files || []));
+        if (!file) {
+          return;
+        }
+        renderDiffPreview({
+          diff: file.diff || '',
+          diffHtml: file.diffHtml || '',
+          source: file.path,
+          preserveFileSelection: true,
+        });
+        $('diff-view-content').scrollTop = 0;
+      }
+      function setDiffPanelOpen(open) {
+        state.diffPanelOpen = open;
+        $('diff-panel').hidden = !open;
+        document.body.dataset.diffOpen = open ? 'true' : 'false';
+        if (open) {
+          if (!state.activeDiffPath && state.diffFiles.length) {
+            selectDiffFile(state.diffFiles[0].path);
+          } else {
+            renderDiffPreview({ diff: state.latestDiff, diffHtml: state.latestDiffHtml, source: 'git', preserveFileSelection: true });
+            renderDiffFileList(state.diffFiles.length ? state.diffFiles : (state.gitStatus?.files || []));
+          }
+        }
+      }
+      function startDiffResize(event) {
+        event.preventDefault();
+        const startX = event.clientX;
+        const startWidth = Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue('--right-panel-width'), 10) || 520;
+        function onMove(moveEvent) {
+          const nextWidth = Math.min(760, Math.max(360, startWidth - (moveEvent.clientX - startX)));
+          document.documentElement.style.setProperty('--right-panel-width', `${nextWidth}px`);
+        }
+        function onUp() {
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+          document.body.classList.remove('resizing-diff');
+        }
+        document.body.classList.add('resizing-diff');
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+      }
+      function countDiffLines(diff) {
+        const stats = { files: 0, insertions: 0, deletions: 0 };
+        String(diff || '').split(/\r?\n/).forEach((line) => {
+          if (line.startsWith('diff --git ')) stats.files += 1;
+          if (line.startsWith('+') && !line.startsWith('+++')) stats.insertions += 1;
+          if (line.startsWith('-') && !line.startsWith('---')) stats.deletions += 1;
+        });
+        return stats;
+      }
+      function renderPlanChecklist(plan, explanation = '') {
+        const box = $('plan-box');
+        box.innerHTML = '';
+        if (explanation) {
+          const note = document.createElement('div');
+          note.className = 'plan-explanation';
+          note.textContent = explanation;
+          box.appendChild(note);
+        }
+        const list = document.createElement('div');
+        list.className = 'plan-checklist';
+        plan.forEach((item) => {
+          const row = document.createElement('div');
+          row.className = 'plan-step';
+          row.dataset.status = item.status || 'pending';
+          const mark = document.createElement('span');
+          mark.className = 'plan-mark';
+          mark.textContent = item.status === 'completed' ? '✓' : item.status === 'inProgress' ? '…' : '○';
+          const text = document.createElement('span');
+          text.textContent = item.step;
+          row.append(mark, text);
+          list.appendChild(row);
+        });
+        box.appendChild(list);
+      }
+      function renderGitStatus(status) {
+        state.gitStatus = status;
+        $('git-branch').textContent = status.branch || 'unknown';
+        $('git-operation').textContent = status.operation || (status.isRepo ? '未知' : '无 Git 仓库');
+        $('git-insertions').textContent = `+${status.insertions || 0}`;
+        $('git-deletions').textContent = `-${status.deletions || 0}`;
+        $('git-file-count').textContent = `${status.fileCount || 0} 个文件 · diff ${status.diffFileCount || 0} 个文件`;
+        state.diffFiles = status.diffFiles || [];
+        if (!state.activeDiffPath && state.diffFiles.length) {
+          state.activeDiffPath = state.diffFiles[0].path;
+        }
+        renderDiffFileList(state.diffFiles.length ? state.diffFiles : (status.files || []));
+        if (status.diff || status.diffHtml) {
+          const selected = state.diffFiles.find((file) => file.path === state.activeDiffPath);
+          if (selected) {
+            renderDiffPreview({ diff: selected.diff, diffHtml: selected.diffHtml, source: selected.path, preserveFileSelection: true });
+          } else {
+            renderDiffPreview({ diff: status.diff, diffHtml: status.diffHtml, source: 'git', preserveFileSelection: true });
+          }
+        }
+      }
+      async function refreshGitStatus() {
+        try {
+          const status = await window.deepcode.getGitStatus({ workspacePath: state.settings.workspacePath });
+          renderGitStatus(status);
+        } catch (error) {
+          $('git-branch').textContent = '读取失败';
+          $('git-operation').textContent = error.message;
+        }
+      }
       function updateMeta() {
         const transport = state.settings.transport || 'mock';
         const model = state.settings.model || '未设置模型';
         $('workspace-meta').textContent = state.settings.workspacePath || '未设置工作区';
         $('model-meta').textContent = `${transport} · ${model}`;
         $('toolbar-model').textContent = model;
-        $('composer-model').textContent = model;
+        $('composer-model').textContent = model.replace(/^gpt-/, '');
       }
       function formatThreadTitle(thread) {
         if (!thread) return '未命名对话';
@@ -472,6 +799,7 @@
         fillSettingsForm();
         updateMeta();
         await loadThreads();
+        await refreshGitStatus();
       }
       function decisionLabel(decision) {
         const labels = {
@@ -706,6 +1034,7 @@
         setComposerRunning(true);
         $('prompt-input').value = '';
         resetRunLog();
+        resetActivityPanels();
         setStatus('Running', 'running');
         clearEmptyState();
         addMessage('user', message);
@@ -735,6 +1064,7 @@
           completeTurnSummary();
           setStatus(response.isMock ? 'Mock Ready' : 'Done');
           await loadThreads();
+          await refreshGitStatus();
         } catch (error) {
           if (state.activeAgentMessage && !state.streamContent) {
             state.activeAgentMessage.remove();
@@ -760,6 +1090,7 @@
         fillSettingsForm();
         updateMeta();
         await loadThreads();
+        await refreshGitStatus();
         $('settings-notice').textContent = '设置已保存。';
       }
       async function testConnection() {
@@ -791,6 +1122,7 @@
         state.streamContent = '';
         state.activeAgentMessage = null;
         resetRunLog();
+        resetActivityPanels();
         setStatus('Loading', 'running');
         try {
           const result = await window.deepcode.resumeThread({ threadId });
@@ -826,6 +1158,7 @@
         $('plan-notice').textContent = '';
         $('save-plan').disabled = true;
         resetRunLog();
+        resetActivityPanels();
         setStatus('Ready');
         switchView('chat');
         showEmptyState();
@@ -893,10 +1226,44 @@
         }
 
         if (event.type === 'plan' || event.type === 'planDelta') {
-          $('plan-box').textContent = event.content || '';
+          if (event.type === 'plan' && Array.isArray(event.plan) && event.plan.length) {
+            renderPlanChecklist(event.plan, event.explanation || '');
+          } else {
+            $('plan-box').textContent = event.content || '';
+          }
           state.latestPlan = event.content || state.latestPlan;
           $('plan-summary').textContent = state.latestPlan ? '已更新' : '暂无计划';
           $('save-plan').disabled = !state.latestPlan;
+          return;
+        }
+
+        if (event.type === 'command') {
+          renderCommandEvent(event);
+          state.eventStats.commands = Math.max(state.eventStats.commands, state.commandRows.size);
+          appendRunLog(event.label || '命令事件');
+          return;
+        }
+
+        if (event.type === 'commandOutput') {
+          appendCommandOutput(event);
+          return;
+        }
+
+        if (event.type === 'fileChange') {
+          renderFileChange(event);
+          state.eventStats.files = Math.max(state.eventStats.files, state.fileRows.size);
+          appendRunLog(event.label || '文件变更');
+          return;
+        }
+
+        if (event.type === 'diffUpdated') {
+          renderDiffPreview({ diff: event.diff || '', source: 'turn' });
+          appendRunLog(event.label || 'Diff updated');
+          return;
+        }
+
+        if (event.type === 'reasoning' || event.type === 'reasoningDelta' || event.type === 'tokenUsage' || event.type === 'threadStatus') {
+          appendRunLog(event.label || event.type);
           return;
         }
 
@@ -917,6 +1284,9 @@
         $('save-settings').addEventListener('click', saveSettings);
         $('test-connection').addEventListener('click', testConnection);
         $('save-plan').addEventListener('click', savePlan);
+        $('open-diff-panel').addEventListener('click', () => setDiffPanelOpen(true));
+        $('close-diff-panel').addEventListener('click', () => setDiffPanelOpen(false));
+        $('diff-resizer').addEventListener('mousedown', startDiffResize);
         $('approval-close').addEventListener('click', () => resolveApproval('cancel'));
         $('approval-overlay').addEventListener('click', (event) => {
           if (event.target === $('approval-overlay')) {
