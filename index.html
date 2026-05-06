@@ -182,15 +182,15 @@
               <button id="save-plan" class="secondary-button" type="button" disabled>保存计划</button>
               <button class="secondary-button ghost" type="button" disabled>发布 PR</button>
             </div>
-            <div class="branch-subsection">
-              <div class="branch-subtitle">运行事件</div>
+            <details class="branch-subsection branch-details">
+              <summary><span>运行事件</span><span id="run-summary">等待运行</span></summary>
               <div id="run-log" class="run-log">等待运行。</div>
-            </div>
-            <div class="branch-subsection">
-              <div class="branch-subtitle">最近计划</div>
+            </details>
+            <details class="branch-subsection branch-details">
+              <summary><span>最近计划</span><span id="plan-summary">暂无计划</span></summary>
               <div id="plan-box" class="plan-box">暂无计划。发送需求后，Agent 回复会显示在这里。</div>
               <div id="plan-notice" class="notice"></div>
-            </div>
+            </details>
           </div>
         </aside>
       </div>
@@ -207,6 +207,14 @@
         activeRequestId: '',
         streamContent: '',
         activeAgentMessage: null,
+        activeSummaryEvent: null,
+        turnStartedAt: 0,
+        summaryCompleted: false,
+        eventStats: {
+          commands: 0,
+        },
+        emptyStateMessage: null,
+        runLogCount: 0,
       };
       const $ = (id) => document.getElementById(id);
       function createRequestId() {
@@ -227,6 +235,19 @@
         scrollMessages();
         return message;
       }
+      function showEmptyState() {
+        if (state.emptyStateMessage) return;
+        const message = document.createElement('div');
+        message.className = 'empty-state-message';
+        message.textContent = '你好，我是 DeepCode Code Agent。请描述你想实现的功能或修改。';
+        $('messages').appendChild(message);
+        state.emptyStateMessage = message;
+      }
+      function clearEmptyState() {
+        if (!state.emptyStateMessage) return;
+        state.emptyStateMessage.remove();
+        state.emptyStateMessage = null;
+      }
       function addEventLine(label, mode = 'event') {
         const entry = document.createElement('div');
         entry.className = `timeline-event ${mode}`;
@@ -234,6 +255,46 @@
         $('messages').appendChild(entry);
         scrollMessages();
         return entry;
+      }
+      function updateEventLine(entry, label) {
+        if (!entry) return;
+        entry.textContent = label;
+      }
+      function formatElapsed(startedAt) {
+        const elapsed = Math.max(0, Date.now() - startedAt);
+        if (elapsed < 1000) {
+          return '1s';
+        }
+        const seconds = Math.round(elapsed / 1000);
+        if (seconds < 60) {
+          return `${seconds}s`;
+        }
+        const minutes = Math.floor(seconds / 60);
+        const rest = seconds % 60;
+        return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+      }
+      function resetTurnSummary() {
+        state.activeSummaryEvent = null;
+        state.turnStartedAt = 0;
+        state.summaryCompleted = false;
+        state.eventStats = {
+          commands: 0,
+        };
+      }
+      function updateEventStats(label) {
+        if (/commandExecution started/i.test(label)) {
+          state.eventStats.commands += 1;
+        }
+      }
+      function completeTurnSummary() {
+        if (state.summaryCompleted || !state.activeSummaryEvent || !state.turnStartedAt) {
+          return;
+        }
+        state.summaryCompleted = true;
+        updateEventLine(state.activeSummaryEvent, `已处理 ${formatElapsed(state.turnStartedAt)}`);
+        if (state.eventStats.commands > 0) {
+          addEventLine(`已运行 ${state.eventStats.commands} 条命令`);
+        }
       }
       function appendRunLog(label) {
         const runLog = $('run-log');
@@ -244,10 +305,14 @@
         entry.textContent = label;
         runLog.appendChild(entry);
         runLog.scrollTop = runLog.scrollHeight;
-        addEventLine(label);
+        state.runLogCount += 1;
+        $('run-summary').textContent = `${state.runLogCount} 条事件`;
+        updateEventStats(label);
       }
       function resetRunLog() {
+        state.runLogCount = 0;
         $('run-log').textContent = '等待运行。';
+        $('run-summary').textContent = '等待运行';
       }
       function updateMeta() {
         const transport = state.settings.transport || 'mock';
@@ -310,12 +375,16 @@
         state.currentRequest = message;
         state.streamContent = '';
         state.activeAgentMessage = null;
+        resetTurnSummary();
         $('send-button').disabled = true;
         $('prompt-input').disabled = true;
         $('prompt-input').value = '';
         resetRunLog();
         setStatus('Running', 'running');
+        clearEmptyState();
         addMessage('user', message);
+        state.turnStartedAt = Date.now();
+        state.activeSummaryEvent = addEventLine('正在处理');
         appendRunLog('Turn started');
         appendRunLog(`Transport: ${state.settings.transport || 'mock'}`);
         state.activeAgentMessage = addMessage('agent', '正在连接 Codex app-server...');
@@ -334,8 +403,10 @@
             state.activeAgentMessage.textContent = response.content || '(空回复)';
           }
           $('plan-box').textContent = state.latestPlan;
+          $('plan-summary').textContent = '已更新';
           $('save-plan').disabled = false;
           appendRunLog(response.isMock ? 'Mock 完成' : `Turn 完成：${response.turnId || ''}`.trim());
+          completeTurnSummary();
           setStatus(response.isMock ? 'Mock Ready' : 'Done');
         } catch (error) {
           if (state.activeAgentMessage && !state.streamContent) {
@@ -343,6 +414,7 @@
           }
           addMessage('error', error.message);
           appendRunLog(`错误：${error.message}`);
+          updateEventLine(state.activeSummaryEvent, `处理失败：${error.message}`);
           setStatus('Error', 'error');
         } finally {
           state.sending = false;
@@ -386,14 +458,17 @@
         state.currentRequest = '';
         state.latestPlan = '';
         state.streamContent = '';
+        resetTurnSummary();
         $('messages').innerHTML = '';
+        state.emptyStateMessage = null;
         $('plan-box').textContent = '暂无计划。发送需求后，Agent 回复会显示在这里。';
+        $('plan-summary').textContent = '暂无计划';
         $('plan-notice').textContent = '';
         $('save-plan').disabled = true;
         resetRunLog();
         setStatus('Ready');
         switchView('chat');
-        addMessage('agent', '你好，我是 DeepCode Code Agent。请描述你想实现的功能或修改。');
+        showEmptyState();
       }
       function handleAgentEvent(event) {
         if (!event || event.requestId !== state.activeRequestId) {
@@ -411,12 +486,16 @@
         if (event.type === 'plan' || event.type === 'planDelta') {
           $('plan-box').textContent = event.content || '';
           state.latestPlan = event.content || state.latestPlan;
+          $('plan-summary').textContent = state.latestPlan ? '已更新' : '暂无计划';
           $('save-plan').disabled = !state.latestPlan;
           return;
         }
 
         if (event.label) {
           appendRunLog(event.label);
+          if (event.type === 'done') {
+            completeTurnSummary();
+          }
         }
       }
       function bindEvents() {
@@ -445,7 +524,7 @@
         bindEvents();
         window.deepcode.onAgentEvent(handleAgentEvent);
         await loadSettings();
-        addMessage('agent', '你好，我是 DeepCode Code Agent。请描述你想实现的功能或修改。');
+        showEmptyState();
       }
       init().catch((error) => {
         addMessage('error', error.message);
