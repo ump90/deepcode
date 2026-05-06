@@ -725,6 +725,141 @@ textarea:focus {
   line-height: 1.45;
 }
 
+.approval-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(15 23 42 / 28%);
+}
+
+.approval-overlay[hidden] {
+  display: none;
+}
+
+.approval-dialog {
+  width: min(620px, 100%);
+  max-height: min(720px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 28px 80px rgb(36 41 47 / 24%);
+}
+
+.approval-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.approval-kicker {
+  max-width: 500px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-header h2 {
+  margin: 4px 0 0;
+  font-size: 17px;
+}
+
+.approval-warning {
+  margin: 14px 18px 0;
+  border: 1px solid #fbbf24;
+  border-radius: 7px;
+  padding: 10px 12px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.approval-body {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.approval-detail {
+  display: grid;
+  gap: 6px;
+}
+
+.approval-detail span,
+.approval-question > label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.approval-detail strong,
+.approval-detail pre {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px;
+  background: #f6f8fa;
+  color: var(--text);
+  font: inherit;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.approval-detail pre {
+  max-height: 180px;
+  overflow: auto;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.approval-question {
+  display: grid;
+  gap: 8px;
+}
+
+.approval-options {
+  display: grid;
+  gap: 8px;
+}
+
+.approval-option {
+  display: flex;
+  grid-template-columns: none;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 9px 10px;
+  font-weight: 500;
+}
+
+.approval-option input {
+  width: auto;
+  margin-top: 2px;
+}
+
+.approval-other-input {
+  margin-top: -3px;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 18px 18px;
+}
+
 .branch-panel {
   position: absolute;
   top: 66px;

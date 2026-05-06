@@ -9,6 +9,10 @@ const DEFAULT_SETTINGS = {
   apiKey: '',
   model: 'gpt-5.4',
   workspacePath: '',
+  approvalPolicy: 'on-request',
+  sandboxPolicy: 'workspace-write',
+  networkAccess: 'restricted',
+  writableRoots: '',
 };
 
 function parseArgs(value) {
@@ -75,6 +79,10 @@ function inferTransport(settings) {
   return 'websocket';
 }
 
+function normalizeChoice(value, allowed, fallback) {
+  return allowed.includes(value) ? value : fallback;
+}
+
 function createSettingsStore({ app, defaultWorkspacePath }) {
   const defaults = {
     ...DEFAULT_SETTINGS,
@@ -98,6 +106,10 @@ function createSettingsStore({ app, defaultWorkspacePath }) {
     nextSettings.apiKey = String(nextSettings.apiKey || '').trim();
     nextSettings.model = String(nextSettings.model || defaults.model).trim();
     nextSettings.workspacePath = String(nextSettings.workspacePath || defaults.workspacePath).trim();
+    nextSettings.approvalPolicy = normalizeChoice(nextSettings.approvalPolicy, ['untrusted', 'on-failure', 'on-request', 'never'], defaults.approvalPolicy);
+    nextSettings.sandboxPolicy = normalizeChoice(nextSettings.sandboxPolicy, ['read-only', 'workspace-write', 'danger-full-access'], defaults.sandboxPolicy);
+    nextSettings.networkAccess = normalizeChoice(nextSettings.networkAccess, ['restricted', 'enabled'], defaults.networkAccess);
+    nextSettings.writableRoots = String(nextSettings.writableRoots || '').trim();
 
     return nextSettings;
   }

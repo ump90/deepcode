@@ -145,6 +145,30 @@
                 <label>OpenAI API Key
                   <input id="api-key" type="password" placeholder="可选：为空时使用本机 Codex 登录或环境变量" />
                 </label>
+                <label>审批策略
+                  <select id="approval-policy">
+                    <option value="on-request">on-request</option>
+                    <option value="on-failure">on-failure</option>
+                    <option value="untrusted">untrusted</option>
+                    <option value="never">never</option>
+                  </select>
+                </label>
+                <label>Sandbox
+                  <select id="sandbox-policy">
+                    <option value="workspace-write">workspace-write</option>
+                    <option value="read-only">read-only</option>
+                    <option value="danger-full-access">danger-full-access</option>
+                  </select>
+                </label>
+                <label>网络访问
+                  <select id="network-access">
+                    <option value="restricted">restricted</option>
+                    <option value="enabled">enabled</option>
+                  </select>
+                </label>
+                <label>可写根目录
+                  <input id="writable-roots" type="text" placeholder="留空时使用工作区；多个路径用逗号分隔" />
+                </label>
               </div>
               <div class="form-actions">
                 <button id="save-settings" class="send-button text-send" type="button">保存设置</button>
@@ -191,6 +215,21 @@
       </div>
     </div>
 
+    <div id="approval-overlay" class="approval-overlay" hidden>
+      <section class="approval-dialog" role="dialog" aria-modal="true" aria-labelledby="approval-title">
+        <div class="approval-header">
+          <div>
+            <div id="approval-kicker" class="approval-kicker">审批</div>
+            <h2 id="approval-title">需要确认</h2>
+          </div>
+          <button id="approval-close" class="icon-button" type="button" title="取消">×</button>
+        </div>
+        <div id="approval-warning" class="approval-warning" hidden></div>
+        <div id="approval-body" class="approval-body"></div>
+        <div id="approval-actions" class="approval-actions"></div>
+      </section>
+    </div>
+
     <script>
       const state = {
         settings: {},
@@ -213,6 +252,8 @@
         },
         emptyStateMessage: null,
         runLogCount: 0,
+        pendingApprovals: new Map(),
+        activeApprovalId: null,
       };
       const $ = (id) => document.getElementById(id);
       function createRequestId() {
@@ -397,6 +438,10 @@
         $('app-server-url').value = state.settings.appServerUrl || '';
         $('model').value = state.settings.model || '';
         $('workspace-path').value = state.settings.workspacePath || '';
+        $('approval-policy').value = state.settings.approvalPolicy || 'on-request';
+        $('sandbox-policy').value = state.settings.sandboxPolicy || 'workspace-write';
+        $('network-access').value = state.settings.networkAccess || 'restricted';
+        $('writable-roots').value = state.settings.writableRoots || '';
         updateTransportFields();
       }
       function collectSettingsForm() {
@@ -408,6 +453,10 @@
           appServerUrl: $('app-server-url').value.trim(),
           model: $('model').value.trim(),
           workspacePath: $('workspace-path').value.trim(),
+          approvalPolicy: $('approval-policy').value,
+          sandboxPolicy: $('sandbox-policy').value,
+          networkAccess: $('network-access').value,
+          writableRoots: $('writable-roots').value.trim(),
         };
       }
       function switchView(view) {
@@ -423,6 +472,178 @@
         fillSettingsForm();
         updateMeta();
         await loadThreads();
+      }
+      function decisionLabel(decision) {
+        const labels = {
+          accept: '允许',
+          acceptForSession: '本会话允许',
+          decline: '拒绝',
+          cancel: '取消',
+          submit: '提交',
+        };
+        return labels[decision] || decision;
+      }
+      function appendApprovalDetail(parent, label, value, asCode = false) {
+        if (!value) return;
+        const row = document.createElement('div');
+        row.className = 'approval-detail';
+        const key = document.createElement('span');
+        key.textContent = label;
+        const content = asCode ? document.createElement('pre') : document.createElement('strong');
+        content.textContent = value;
+        row.append(key, content);
+        parent.appendChild(row);
+      }
+      function renderToolQuestion(parent, question) {
+        const block = document.createElement('div');
+        block.className = 'approval-question';
+        block.dataset.questionId = question.id;
+        block.dataset.hasOptions = Array.isArray(question.options) && question.options.length ? 'true' : 'false';
+        block.dataset.isSecret = question.isSecret ? 'true' : 'false';
+
+        const label = document.createElement('label');
+        label.textContent = question.question || question.header || question.id;
+        block.appendChild(label);
+
+        if (Array.isArray(question.options) && question.options.length) {
+          const options = document.createElement('div');
+          options.className = 'approval-options';
+          question.options.forEach((option, index) => {
+            const optionLabel = document.createElement('label');
+            optionLabel.className = 'approval-option';
+            const radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.name = `approval-${question.id}`;
+            radio.value = option.label;
+            radio.checked = index === 0;
+            const text = document.createElement('span');
+            text.textContent = option.description ? `${option.label} · ${option.description}` : option.label;
+            optionLabel.append(radio, text);
+            options.appendChild(optionLabel);
+          });
+          if (question.isOther) {
+            const otherLabel = document.createElement('label');
+            otherLabel.className = 'approval-option';
+            const radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.name = `approval-${question.id}`;
+            radio.value = '__other__';
+            const text = document.createElement('span');
+            text.textContent = '其他';
+            otherLabel.append(radio, text);
+            const input = document.createElement('input');
+            input.className = 'approval-other-input';
+            input.type = question.isSecret ? 'password' : 'text';
+            input.placeholder = '输入内容';
+            options.append(otherLabel, input);
+          }
+          block.appendChild(options);
+        } else {
+          const input = document.createElement('input');
+          input.className = 'approval-text-input';
+          input.type = question.isSecret ? 'password' : 'text';
+          input.placeholder = question.header || '输入内容';
+          block.appendChild(input);
+        }
+
+        parent.appendChild(block);
+      }
+      function collectToolAnswers() {
+        const answers = {};
+        $('approval-body').querySelectorAll('.approval-question').forEach((block) => {
+          const id = block.dataset.questionId;
+          let value = '';
+          if (block.dataset.hasOptions === 'true') {
+            const selected = block.querySelector('input[type="radio"]:checked');
+            if (selected?.value === '__other__') {
+              value = block.querySelector('.approval-other-input')?.value.trim() || '';
+            } else {
+              value = selected?.value || '';
+            }
+          } else {
+            value = block.querySelector('.approval-text-input')?.value.trim() || '';
+          }
+          answers[id] = { answers: value ? [value] : [] };
+        });
+        return answers;
+      }
+      function renderApprovalDialog(approval) {
+        state.activeApprovalId = approval.id;
+        $('approval-kicker').textContent = approval.method || 'approval';
+        $('approval-title').textContent = approval.title || '需要确认';
+        $('approval-body').innerHTML = '';
+        $('approval-actions').innerHTML = '';
+
+        if (approval.destructive) {
+          $('approval-warning').hidden = false;
+          $('approval-warning').textContent = '检测到破坏性命令，继续前请确认目标路径和影响范围。';
+        } else {
+          $('approval-warning').hidden = true;
+          $('approval-warning').textContent = '';
+        }
+
+        if (approval.kind === 'command') {
+          appendApprovalDetail($('approval-body'), '命令', approval.command || '(空命令)', true);
+          appendApprovalDetail($('approval-body'), '目录', approval.cwd || '');
+          appendApprovalDetail($('approval-body'), '原因', approval.reason || '');
+        } else if (approval.kind === 'fileChange') {
+          if (Array.isArray(approval.files) && approval.files.length) {
+            appendApprovalDetail($('approval-body'), '文件', approval.files.join('\n'), true);
+          }
+          appendApprovalDetail($('approval-body'), '授权根目录', approval.grantRoot || '');
+          appendApprovalDetail($('approval-body'), 'Item', approval.itemId || '');
+          appendApprovalDetail($('approval-body'), '原因', approval.reason || '');
+        } else {
+          (approval.questions || []).forEach((question) => renderToolQuestion($('approval-body'), question));
+        }
+
+        const decisions = approval.availableDecisions || ['cancel'];
+        decisions.forEach((decision) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = decision === 'accept' || decision === 'submit' ? 'send-button text-send' : 'secondary-button';
+          button.textContent = decisionLabel(decision);
+          button.addEventListener('click', () => resolveApproval(decision));
+          $('approval-actions').appendChild(button);
+        });
+        $('approval-overlay').hidden = false;
+      }
+      function showNextApproval() {
+        if (state.activeApprovalId || !state.pendingApprovals.size) return;
+        const approval = state.pendingApprovals.values().next().value;
+        renderApprovalDialog(approval);
+      }
+      function hideApprovalDialog() {
+        $('approval-overlay').hidden = true;
+        state.activeApprovalId = null;
+        showNextApproval();
+      }
+      async function resolveApproval(decision) {
+        const approval = state.pendingApprovals.get(state.activeApprovalId);
+        if (!approval) {
+          hideApprovalDialog();
+          return;
+        }
+
+        $('approval-actions').querySelectorAll('button').forEach((button) => {
+          button.disabled = true;
+        });
+
+        try {
+          await window.deepcode.resolveApproval({
+            approvalId: approval.id,
+            decision: decision === 'submit' ? undefined : decision,
+            answers: approval.kind === 'toolInput' && decision === 'submit' ? collectToolAnswers() : {},
+          });
+          state.pendingApprovals.delete(approval.id);
+          appendRunLog(`审批已响应：${decisionLabel(decision)}`);
+          hideApprovalDialog();
+        } catch (error) {
+          appendRunLog(`审批响应失败：${error.message}`);
+          $('approval-actions').querySelectorAll('button').forEach((button) => {
+            button.disabled = false;
+          });
+        }
       }
       function setComposerRunning(isRunning) {
         $('send-button').textContent = isRunning ? '↵' : '↑';
@@ -526,6 +747,9 @@
           state.sending = false;
           state.activeRequestId = '';
           state.activeAgentMessage = null;
+          state.pendingApprovals.clear();
+          $('approval-overlay').hidden = true;
+          state.activeApprovalId = null;
           setComposerRunning(false);
           $('prompt-input').focus();
         }
@@ -632,6 +856,28 @@
           state.turnId = event.turnId;
         }
 
+        if (event.type === 'approvalRequired') {
+          const approval = event.approval;
+          if (approval?.id) {
+            state.pendingApprovals.set(approval.id, approval);
+            showNextApproval();
+          }
+          addEventLine(event.label || `需要审批：${event.rawMethod || 'unknown'}`, 'approval');
+          appendRunLog(event.label || `Approval request: ${event.rawMethod || 'unknown'}`);
+          return;
+        }
+
+        if (event.type === 'approvalResolved') {
+          if (event.approvalId) {
+            state.pendingApprovals.delete(event.approvalId);
+            if (state.activeApprovalId === event.approvalId) {
+              hideApprovalDialog();
+            }
+          }
+          appendRunLog(event.label || '审批已响应');
+          return;
+        }
+
         if (event.type === 'serverRequest') {
           addEventLine(event.label || `需要客户端处理：${event.rawMethod || 'unknown'}`, 'approval');
           appendRunLog(event.label || `Server request: ${event.rawMethod || 'unknown'}`);
@@ -671,6 +917,12 @@
         $('save-settings').addEventListener('click', saveSettings);
         $('test-connection').addEventListener('click', testConnection);
         $('save-plan').addEventListener('click', savePlan);
+        $('approval-close').addEventListener('click', () => resolveApproval('cancel'));
+        $('approval-overlay').addEventListener('click', (event) => {
+          if (event.target === $('approval-overlay')) {
+            resolveApproval('cancel');
+          }
+        });
         $('window-minimize').addEventListener('click', () => window.deepcode.minimizeWindow());
         $('window-maximize').addEventListener('click', () => window.deepcode.toggleMaximizeWindow());
         $('window-close').addEventListener('click', () => window.deepcode.closeWindow());

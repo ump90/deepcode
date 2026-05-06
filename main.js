@@ -64,6 +64,10 @@ function registerIpcHandlers() {
     const settings = await settingsStore.readSettings();
     return sessionManager.steerTurn(settings, payload);
   });
+  ipcMain.handle('agent:resolve-approval', async (_event, payload = {}) => {
+    const settings = await settingsStore.readSettings();
+    return sessionManager.resolveApproval(settings, payload);
+  });
   ipcMain.handle('agent:test-connection', async (_event, partialSettings) => {
     const currentSettings = await settingsStore.readSettings();
     const settings = settingsStore.normalizeSettings({ ...currentSettings, ...partialSettings });

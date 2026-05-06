@@ -1,6 +1,8 @@
 const { StdioJsonRpcPeer, WebSocketJsonRpcPeer } = require('./codexJsonRpc');
 
 const TURN_TIMEOUT_MS = 10 * 60 * 1000;
+const SERVER_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+const SENSITIVE_KEY_PATTERN = /(api[_-]?key|authorization|bearer|password|secret|token)/i;
 
 function getRequestId(payload = {}) {
   return payload.requestId || `request-${Date.now()}`;
@@ -83,13 +85,13 @@ function summarizeServerRequest(method) {
   return labels[method] || `需要客户端处理：${method}`;
 }
 
-function getDefaultServerRequestResponse(method) {
+function getUnsupportedServerRequestResponse(method) {
   if (method === 'item/commandExecution/requestApproval') {
-    return { decision: 'decline' };
+    return { decision: 'cancel' };
   }
 
   if (method === 'item/fileChange/requestApproval') {
-    return { decision: 'decline' };
+    return { decision: 'cancel' };
   }
 
   if (method === 'item/tool/requestUserInput') {
@@ -118,24 +120,168 @@ function getDefaultServerRequestResponse(method) {
   return null;
 }
 
+function isInteractiveServerRequest(method) {
+  return [
+    'item/commandExecution/requestApproval',
+    'item/fileChange/requestApproval',
+    'item/tool/requestUserInput',
+  ].includes(method);
+}
+
+function redactSensitiveText(value) {
+  return String(value || '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/((?:OPENAI_)?API[_-]?KEY|TOKEN|SECRET|PASSWORD|AUTHORIZATION)(\s*[:=]\s*)(["']?)[^\s"']+/gi, '$1$2$3[redacted]');
+}
+
+function sanitizeForRenderer(value) {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeForRenderer);
+  }
+
+  if (!value || typeof value !== 'object') {
+    return typeof value === 'string' ? redactSensitiveText(value) : value;
+  }
+
+  const result = {};
+  for (const [key, child] of Object.entries(value)) {
+    result[key] = SENSITIVE_KEY_PATTERN.test(key) ? '[redacted]' : sanitizeForRenderer(child);
+  }
+  return result;
+}
+
+function parseWritableRoots(value, cwd) {
+  const roots = String(value || '')
+    .split(/[\r\n,;]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (roots.length) {
+    return roots;
+  }
+
+  return cwd ? [cwd] : [];
+}
+
+function buildApprovalPolicy(settings) {
+  const policy = settings.approvalPolicy || 'on-request';
+  return ['untrusted', 'on-failure', 'on-request', 'never'].includes(policy) ? policy : 'on-request';
+}
+
+function buildSandboxMode(settings) {
+  const mode = settings.sandboxPolicy || 'workspace-write';
+  return ['read-only', 'workspace-write', 'danger-full-access'].includes(mode) ? mode : 'workspace-write';
+}
+
+function isNetworkEnabled(settings) {
+  return settings.networkAccess === 'enabled' || settings.networkAccess === true;
+}
+
+function buildSandboxPolicy(settings, cwd) {
+  const mode = buildSandboxMode(settings);
+  if (mode === 'danger-full-access') {
+    return { type: 'dangerFullAccess' };
+  }
+
+  if (mode === 'read-only') {
+    return { type: 'readOnly', networkAccess: isNetworkEnabled(settings) };
+  }
+
+  return {
+    type: 'workspaceWrite',
+    writableRoots: parseWritableRoots(settings.writableRoots, cwd),
+    networkAccess: isNetworkEnabled(settings),
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  };
+}
+
+function commandLooksDestructive(command) {
+  return /\b(rm\s+-rf|remove-item|del\s+\/[fsq]|rmdir\s+\/s|git\s+reset\s+--hard|git\s+clean\s+-fd|format\s+|diskpart)\b/i.test(command || '');
+}
+
+function extractFileChangeLabels(params = {}) {
+  const candidates = [params.files, params.fileChanges, params.changes, params.paths].filter(Array.isArray).flat();
+  return candidates
+    .map((entry) => {
+      if (typeof entry === 'string') {
+        return entry;
+      }
+      return entry?.path || entry?.file || entry?.targetPath || entry?.relativePath || '';
+    })
+    .filter(Boolean)
+    .map(redactSensitiveText);
+}
+
+function buildApprovalDetails(requestId, method, params = {}) {
+  const safeParams = sanitizeForRenderer(params);
+
+  if (method === 'item/commandExecution/requestApproval') {
+    const command = redactSensitiveText(params.command || '');
+    return {
+      id: requestId,
+      kind: 'command',
+      title: '命令执行审批',
+      method,
+      command,
+      cwd: params.cwd || '',
+      reason: params.reason || '',
+      availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
+      destructive: commandLooksDestructive(command),
+      rawParams: safeParams,
+    };
+  }
+
+  if (method === 'item/fileChange/requestApproval') {
+    return {
+      id: requestId,
+      kind: 'fileChange',
+      title: '文件变更审批',
+      method,
+      itemId: params.itemId || '',
+      grantRoot: params.grantRoot || '',
+      files: extractFileChangeLabels(params),
+      reason: params.reason || '',
+      availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
+      rawParams: safeParams,
+    };
+  }
+
+  return {
+    id: requestId,
+    kind: 'toolInput',
+    title: '工具输入',
+    method,
+    questions: Array.isArray(params.questions) ? sanitizeForRenderer(params.questions) : [],
+    availableDecisions: ['submit', 'cancel'],
+    rawParams: safeParams,
+  };
+}
+
 function buildTextInput(text) {
   return { type: 'text', text, text_elements: [] };
 }
 
 function buildThreadParams(settings) {
+  const cwd = settings.workspacePath || '';
   return {
     ...(settings.model ? { model: settings.model } : {}),
-    ...(settings.workspacePath ? { cwd: settings.workspacePath } : {}),
+    ...(cwd ? { cwd } : {}),
+    approvalPolicy: buildApprovalPolicy(settings),
+    sandbox: buildSandboxMode(settings),
     serviceName: 'deepcode',
   };
 }
 
 function buildTurnParams(payload, settings, threadId) {
+  const cwd = payload.workspacePath || settings.workspacePath || '';
   return {
     threadId,
     input: [buildTextInput(payload.message)],
     ...(payload.model || settings.model ? { model: payload.model || settings.model } : {}),
-    ...(payload.workspacePath || settings.workspacePath ? { cwd: payload.workspacePath || settings.workspacePath } : {}),
+    ...(cwd ? { cwd } : {}),
+    approvalPolicy: buildApprovalPolicy(settings),
+    sandboxPolicy: buildSandboxPolicy(settings, cwd),
   };
 }
 
@@ -172,6 +318,10 @@ function getSettingsFingerprint(settings) {
     appServerUrl: settings.appServerUrl,
     apiKeyPresent: Boolean(settings.apiKey),
     workspacePath: settings.workspacePath,
+    approvalPolicy: settings.approvalPolicy,
+    sandboxPolicy: settings.sandboxPolicy,
+    networkAccess: settings.networkAccess,
+    writableRoots: settings.writableRoots,
   });
 }
 
@@ -201,6 +351,8 @@ class CodexSessionManager {
     this.activeTurnId = null;
     this.activeTurnState = null;
     this.turnStates = new Map();
+    this.pendingServerRequests = new Map();
+    this.serverRequestCounter = 1;
 
     this.onNotification = this.onNotification.bind(this);
     this.onServerRequest = this.onServerRequest.bind(this);
@@ -246,6 +398,7 @@ class CodexSessionManager {
     this.activeTurnId = null;
     this.activeTurnState = null;
     this.turnStates.clear();
+    this.cancelPendingServerRequests();
   }
 
   close() {
@@ -277,6 +430,7 @@ class CodexSessionManager {
 
   cleanupTurnState(state) {
     clearTimeout(state.timer);
+    this.cancelPendingServerRequestsForState(state);
     if (state.turnId) {
       this.turnStates.delete(state.turnId);
     }
@@ -329,6 +483,7 @@ class CodexSessionManager {
       resolve: null,
       reject: null,
       promise: null,
+      pendingServerRequestIds: new Set(),
     };
 
     state.promise = new Promise((resolve, reject) => {
@@ -353,8 +508,36 @@ class CodexSessionManager {
 
   onServerRequest(message) {
     const state = this.findTurnState(message.params);
-    const response = getDefaultServerRequestResponse(message.method);
-    const decision = response ? '已自动拒绝，等待后续审批 UI 接入' : '暂不支持';
+
+    if (isInteractiveServerRequest(message.method) && state) {
+      const approvalRequestId = `approval-${Date.now()}-${this.serverRequestCounter}`;
+      this.serverRequestCounter += 1;
+      const approval = buildApprovalDetails(approvalRequestId, message.method, message.params);
+      const timer = setTimeout(() => {
+        this.resolvePendingServerRequest(approvalRequestId, { decision: 'cancel', answers: {} }, true);
+      }, SERVER_REQUEST_TIMEOUT_MS);
+
+      this.pendingServerRequests.set(approvalRequestId, {
+        id: approvalRequestId,
+        rpcId: message.id,
+        method: message.method,
+        state,
+        timer,
+      });
+      state.pendingServerRequestIds.add(approvalRequestId);
+
+      this.emitTurnEvent(state, {
+        type: 'approvalRequired',
+        label: summarizeServerRequest(message.method),
+        rawMethod: message.method,
+        rawParams: approval.rawParams,
+        approval,
+      });
+      return;
+    }
+
+    const response = getUnsupportedServerRequestResponse(message.method);
+    const decision = response ? '已安全取消' : '暂不支持';
 
     this.emitTurnEvent(state, {
       type: 'serverRequest',
@@ -369,6 +552,71 @@ class CodexSessionManager {
     }
 
     this.peer.respondError(message.id, -32601, 'DeepCode V1 does not handle this server request yet.');
+  }
+
+  buildServerRequestResponse(pending, resolution = {}) {
+    if (pending.method === 'item/tool/requestUserInput') {
+      return { answers: resolution.answers || {} };
+    }
+
+    const available = pending.method === 'item/commandExecution/requestApproval'
+      ? new Set(['accept', 'acceptForSession', 'decline', 'cancel'])
+      : new Set(['accept', 'acceptForSession', 'decline', 'cancel']);
+    const decision = available.has(resolution.decision) ? resolution.decision : 'cancel';
+    return { decision };
+  }
+
+  respondToPendingServerRequest(pending, response) {
+    clearTimeout(pending.timer);
+    this.pendingServerRequests.delete(pending.id);
+    pending.state?.pendingServerRequestIds?.delete(pending.id);
+
+    try {
+      if (this.peer && !this.peer.closed) {
+        this.peer.respond(pending.rpcId, response);
+      }
+    } catch (error) {
+      this.emitTurnEvent(pending.state, { type: 'event', label: `审批响应失败：${error.message}` });
+    }
+  }
+
+  resolvePendingServerRequest(approvalRequestId, resolution = {}, isTimeout = false) {
+    const pending = this.pendingServerRequests.get(approvalRequestId);
+    if (!pending) {
+      throw new Error('审批请求已结束或不存在。');
+    }
+
+    const response = this.buildServerRequestResponse(pending, resolution);
+    this.respondToPendingServerRequest(pending, response);
+    this.emitTurnEvent(pending.state, {
+      type: 'approvalResolved',
+      label: isTimeout ? '审批超时，已取消' : `审批已响应：${response.decision || 'submitted'}`,
+      approvalId: approvalRequestId,
+    });
+    return { ok: true, response };
+  }
+
+  cancelPendingServerRequestsForState(state) {
+    if (!state?.pendingServerRequestIds?.size) {
+      return;
+    }
+
+    for (const requestId of [...state.pendingServerRequestIds]) {
+      const pending = this.pendingServerRequests.get(requestId);
+      if (!pending) {
+        state.pendingServerRequestIds.delete(requestId);
+        continue;
+      }
+      const response = this.buildServerRequestResponse(pending, { decision: 'cancel', answers: {} });
+      this.respondToPendingServerRequest(pending, response);
+    }
+  }
+
+  cancelPendingServerRequests() {
+    for (const pending of [...this.pendingServerRequests.values()]) {
+      const response = this.buildServerRequestResponse(pending, { decision: 'cancel', answers: {} });
+      this.respondToPendingServerRequest(pending, response);
+    }
   }
 
   onNotification(message) {
@@ -730,6 +978,18 @@ class CodexSessionManager {
     });
     this.emitTurnEvent(state, { type: 'event', label: 'Steer input sent' });
     return { ok: true, conversationId: threadId, turnId, result };
+  }
+
+  async resolveApproval(_settings, payload = {}) {
+    const approvalRequestId = payload.approvalId || payload.id;
+    if (!approvalRequestId) {
+      throw new Error('approvalId 不能为空。');
+    }
+
+    return this.resolvePendingServerRequest(approvalRequestId, {
+      decision: payload.decision,
+      answers: payload.answers,
+    });
   }
 }
 

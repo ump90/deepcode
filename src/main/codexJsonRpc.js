@@ -254,6 +254,16 @@ function buildLaunchConfig(command, args) {
   };
 }
 
+function isLoopbackWebSocketUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+    return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname);
+  } catch (error) {
+    return false;
+  }
+}
+
 class JsonRpcPeer extends EventEmitter {
   constructor() {
     super();
@@ -469,6 +479,10 @@ class WebSocketJsonRpcPeer extends JsonRpcPeer {
   connect() {
     if (typeof WebSocket !== 'function') {
       return Promise.reject(new Error('当前 Electron/Node 运行时不支持原生 WebSocket。'));
+    }
+
+    if (!isLoopbackWebSocketUrl(this.settings.appServerUrl) && !this.settings.apiKey) {
+      return Promise.reject(new Error('WebSocket app-server 指向非 loopback 地址时必须配置认证信息。'));
     }
 
     return new Promise((resolve, reject) => {
